@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="world_boxes">
+
+  <!--
+    Generic box macro you can call as many times as you want.
+
+    Params:
+      name           : unique link/joint base name (e.g., "uav_body", "no_go_1")
+      parent_link    : link to attach to (usually "base_link" or "world_link")
+      xyz            : box center position (m) in parent_link frame: "x y z"
+      rpy            : roll pitch yaw (rad) of the box: "r p y"
+      size           : box size: "sx sy sz" (m)
+      color          : optional RGBA for visual; "" = no visual
+      collision_only : if "true", visual is omitted regardless of color
+  -->
+  <xacro:macro name="add_world_box" params="
+      name
+      parent_link
+      xyz:='0 0 0'
+      rpy:='0 0 0'
+      size:='1 1 1'
+      color:=''
+      collision_only:='false'">
+
+    <!-- Link that carries visual/collision -->
+    <link name="${name}_link">
+      <!-- Visual (optional) -->
+      <xacro:if value="${(not collision_only) and (color != '')}">
+        <visual>
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <geometry><box size="${size}"/></geometry>
+          <material name="${name}_mat">
+            <color rgba="${color}"/>
+          </material>
+        </visual>
+      </xacro:if>
+
+      <!-- Collision (always present) -->
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><box size="${size}"/></geometry>
+      </collision>
+    </link>
+
+    <!-- Fixed joint that places the box in the parent_link frame -->
+    <joint name="${name}_fixed" type="fixed">
+      <parent link="${parent_link}"/>
+      <child  link="${name}_link"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+  </xacro:macro>
+
+</robot>

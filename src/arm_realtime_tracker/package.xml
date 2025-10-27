@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>arm_realtime_tracker</name>
+  <version>0.1.0</version>
+  <description>Realtime pose tracker using MoveIt (C++): subscribes to a PoseStamped and plans/executes.</description>
+
+  <maintainer email="you@example.com">you</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- ROS2 core -->
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>rclcpp_components</depend>
+
+  <!-- Messages -->
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+
+  <!-- TF2 -->
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <!-- MoveIt C++ interface (gives MoveGroupInterface) -->
+  <exec_depend>moveit_ros_planning_interface</exec_depend>
+  <build_depend>moveit_ros_planning_interface</build_depend>
+
+  <!-- For launch file -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <exec_depend>moveit_configs_utils</exec_depend>
+
+  <!-- Optional, but helpful -->
+  <depend>builtin_interfaces</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

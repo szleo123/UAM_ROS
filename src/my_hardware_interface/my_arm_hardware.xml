@@ -1,0 +1,9 @@
+<library path="my_arm_hardware">
+  <class name="my_arm_hardware/MyArmHardware"
+         type="my_arm_hardware::MyArmHardware"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+      The ros2_control RRbot example using a system hardware interface-type.
+    </description>
+  </class>
+</library>

@@ -1,0 +1,8 @@
+ros2 topic pub /desired_pose geometry_msgs/PoseStamped "header: frame_id: uav_mount pose:
+  position: {x: 1.05, y: -0.05, z: -0.69},
+  orientation: {x: 0.708, y: 0.0, z: 0.705, w: 0.0}"
+
+ros2 topic pub  /desired_pose geometry_msgs/msg/PoseStamped \
+'{header: {frame_id: base_link},
+  pose: {position: {x: 1.05, y: -0.05, z: -0.69},
+         orientation: {x: 0.708, y: 0.0, z: 0.705, w: 0.0}}}'
