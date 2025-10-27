@@ -146,7 +146,7 @@ private:
 
   inline double units_to_grip(int16_t units) const {
     double u = std::min(std::max((double)units, 60.0), 1390.0);
-    double t = u / (1390.0 - 60.0); // 0..1
+    double t = (u - 60.0) / (1390.0 - 60.0); // 0..1
     return this->grip_ros_min_ + t * (this->grip_ros_max_ - this->grip_ros_min_);
   }
 };
