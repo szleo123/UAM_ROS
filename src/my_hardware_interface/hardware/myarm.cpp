@@ -588,31 +588,6 @@ hardware_interface::return_type MyArmHardware::write(
         auto f = gripper_pack_target(gripper_id_, tgt);
         gripper_.Write(f);
         gripper_.DrainWriteBuffer();
-        // try {
-        //   gripper_.DrainWriteBuffer();
-        //   auto t0 = get_clock()->now();
-        //   while ((get_clock()->now() - t0).nanoseconds() < 5000000) { // 5ms wait
-        //     char c= 0; 
-        //     while (gripper_.IsDataAvailable()) {
-        //       gripper_.ReadByte(c, 0);
-        //       gripper_rx_.push_back(static_cast<uint8_t>(c));
-        //     }
-        //     int16_t cur_units = 0;
-        //     if (gripper_try_parse_state(gripper_rx_, cur_units)) {
-        //       RCLCPP_WARN_THROTTLE(get_logger(), *clock_, 2000, 
-        //         "Gripper immediate read after write succeeded.");
-        //       double ros_pos = units_to_grip(cur_units);
-        //       hw_states_[6] = ros_pos;
-        //       break; 
-        //     }
-        //   }
-        //   rclcpp::sleep_for(std::chrono::microseconds(100));
-
-        // } catch (const std::exception& e) {
-        //   RCLCPP_WARN_THROTTLE(get_logger(), *clock_, 2000,
-        //     "Gripper immediate read after write failed: %s", e.what());
-        // }
-
         // (Optional throttle)
         RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 2000,
           "Gripper write: ROS %.3f -> units %u", ros_cmd, (unsigned)tgt);
