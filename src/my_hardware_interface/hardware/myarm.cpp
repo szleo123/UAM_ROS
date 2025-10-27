@@ -80,15 +80,14 @@ static inline bool gripper_try_parse_state(std::vector<uint8_t>& buf, int16_t& c
       if (buf.size() - i < 4) break; 
       uint8_t len = buf[i+2];                       // payload count after [len]
       size_t frame_len = 2 + 1 + (len + 1) + 1;     // hdr(2)+len(1)+[ID..payload..](len+1)+chk(1)
-      if (buf.size() - i < frame_len) break;
-      if (buf.size() - i < 3) break;
+
       // checksum over bytes starting at [len]
       uint32_t s = 0; for (size_t k = i+2; k < i+frame_len-1; ++k) s += buf[k];
       uint8_t chk = buf[i + frame_len - 1];
       if (chk != static_cast<uint8_t>(s & 0xFF)) { ++i; continue; }
       if (buf[i+4] != 0x21 || buf[i+5] != 0x37) { ++i; continue; } // not a state frame
 
-      current_units = static_cast<int16_t>(buf[i+14] | buf[i+15] << 8);
+      current_units = static_cast<int16_t>(buf[i+9] | buf[i+10] << 8);
       buf.erase(buf.begin()+static_cast<long>(i), buf.begin()+static_cast<long>(i+frame_len));
       return true;
     }
@@ -522,49 +521,39 @@ hardware_interface::return_type MyArmHardware::read(
     }
   }
 
-  if (gripper_ok_){
-    double prev = hw_states_[6];
-    hw_states_[6] = hw_commands_[6];
-    hw_velocities_[6] = (hw_states_[6] - prev) / period.seconds();
-  }
-  // if (gripper_ok_) {
-  //   try {
-  //     std::scoped_lock gk(gripper_mtx_);
-  //     // pull in all available bytes (non-blocking)
-  //     char c = 0;
-  //     while (gripper_.IsDataAvailable()) {
-  //       gripper_.ReadByte(c, 0);
-  //       gripper_rx_.push_back(static_cast<uint8_t>(c));
-  //     }
-
-  //     // parse as many valid frames as possible
-  //     bool got_any = false;
-  //     int16_t cur_units = 0;
-  //     while (gripper_try_parse_state(gripper_rx_, cur_units)) {
-  //       got_any = true;
-  //       double ros_pos = units_to_grip(cur_units);
-  //       double prev = hw_states_[6];
-  //       hw_states_[6] = ros_pos;
-  //       hw_velocities_[6] = (hw_states_[6] - prev) / period.seconds();
-  //       // (Optional)
-  //       RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 2000,
-  //         "Gripper read: units %d -> ROS %.3f", (int)cur_units, ros_pos);
-  //     }
-
-  //     if (got_any){
-  //       grip_waiting_ = false;
-  //     } else if (grip_waiting_ && get_clock()->now() > grip_deadline_) {
-  //       // timeout waiting for reply
-  //       grip_waiting_ = false;
-  //       RCLCPP_WARN_THROTTLE(get_logger(), *clock_, 2000,
-  //         "Gripper read: reply timeout.");
-  //     }
-  //   } catch (const std::exception& e) {
-  //     gripper_ok_ = false;
-  //     RCLCPP_ERROR_THROTTLE(get_logger(), *clock_, 2000,
-  //       "Gripper read failed: %s", e.what());
-  //   }
+  // if (gripper_ok_){
+  //   double prev = hw_states_[6];
+  //   hw_states_[6] = hw_commands_[6];
+  //   hw_velocities_[6] = (hw_states_[6] - prev) / period.seconds();
   // }
+
+  if (gripper_ok_) {
+    try {
+      std::scoped_lock gk(gripper_mtx_);
+      // pull in all available bytes (non-blocking)
+      char c = 0;
+      while (gripper_.IsDataAvailable()) {
+        gripper_.ReadByte(c, 0);
+        gripper_rx_.push_back(static_cast<uint8_t>(c));
+      }
+      // parse all complete state frames
+      int16_t cur_units = 0;
+      if (gripper_try_parse_state(gripper_rx_, cur_units)) {
+        double ros_pos = units_to_grip(cur_units);
+        double prev = hw_states_[6];
+        hw_states_[6] = ros_pos;
+        hw_velocities_[6] = (hw_states_[6] - prev) / period.seconds();
+        // (Optional)
+        RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 2000,
+          "Gripper read: units %d -> ROS %.3f", (int)cur_units, ros_pos);
+      }
+
+    } catch (const std::exception& e) {
+      gripper_ok_ = false;
+      RCLCPP_ERROR_THROTTLE(get_logger(), *clock_, 2000,
+        "Gripper read failed: %s", e.what());
+    }
+  }
 
   return hardware_interface::return_type::OK;
 }
