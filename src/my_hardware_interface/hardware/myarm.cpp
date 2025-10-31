@@ -507,8 +507,7 @@ hardware_interface::return_type MyArmHardware::read(
           "Read positions: %.3f %.3f %.3f %.3f %.3f %.3f",
           hw_states_[0], hw_states_[1], hw_states_[2],
           hw_states_[3], hw_states_[4], hw_states_[5]);
-
-        
+ 
       } else {
         // Bad checksum; skip this header 
         i++;

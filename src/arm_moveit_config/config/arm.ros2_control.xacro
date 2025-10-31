@@ -17,9 +17,9 @@
                 <!-- <plugin>mock_components/GenericSystem</plugin> -->
                 
                 <plugin>my_arm_hardware/MyArmHardware</plugin>
-                <param name="serial_port">/dev/ttyUSB6</param>
+                <param name="serial_port">/dev/ttyUSB4</param>
                 <param name="reader_port">/dev/ttyUSB5</param>
-                <param name="gripper_port">/dev/ttyUSB4</param>
+                <param name="gripper_port">/dev/ttyUSB6</param>
                 <param name="baudrate">230400</param>
                 <param name="gripper_baudrate">115200</param>
                 <param name="position_scale">1000</param> 
