@@ -126,6 +126,7 @@ private:
   bool initial_positions_received_ = false;
   double initial_read_timeout_sec_ = 2.0; 
   rclcpp::Time last_feedback_time_; // optional for diagnostics
+  double feedback_stale_timeout_sec_ = 0.5;  // max allowed feedback age before writes stop
 
   // Helpers 
   static inline int16_t clamp_to_i16(double val)

@@ -15,6 +15,7 @@
 #include "my_arm_hardware/myarm.hpp"
 
 #include <chrono>
+#include <algorithm>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -198,6 +199,8 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
 
   if (info_.hardware_parameters.count("initial_read_timeout_sec"))
     initial_read_timeout_sec_ = std::stod(info_.hardware_parameters.at("initial_read_timeout_sec"));
+  if (info_.hardware_parameters.count("feedback_stale_timeout_sec"))
+    feedback_stale_timeout_sec_ = std::stod(info_.hardware_parameters.at("feedback_stale_timeout_sec"));
 
   hw_states_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
   hw_commands_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
@@ -456,6 +459,7 @@ hardware_interface::return_type MyArmHardware::read(
     constexpr size_t N = 6; // number of joints expected
 
     size_t i = 0; 
+    bool frame_received = false;
     while (rx_buffer_.size() - i >= FRAME_LEN) {
       // Find header 
       if (rx_buffer_[i] != HEADER) {
@@ -494,6 +498,7 @@ hardware_interface::return_type MyArmHardware::read(
 
         // if this is the first valid feedback, mark it
         last_feedback_time_ = get_clock()->now();
+        frame_received = true;
         if (!initial_positions_received_) {
           for (size_t j = 0; j < hw_states_.size(); j++) {
             hw_commands_[j] = hw_states_[j]; // align commands to states
@@ -517,6 +522,20 @@ hardware_interface::return_type MyArmHardware::read(
     // Erase all processed bytes
     if (i > 0) {
       rx_buffer_.erase(rx_buffer_.begin(), rx_buffer_.begin() + static_cast<long>(i));
+    }
+
+    if (!frame_received && initial_positions_received_ &&
+        feedback_stale_timeout_sec_ > 1e-6 &&
+        last_feedback_time_.nanoseconds() > 0)
+    {
+      const double age = (get_clock()->now() - last_feedback_time_).seconds();
+      if (age > feedback_stale_timeout_sec_)
+      {
+        initial_positions_received_ = false;
+        RCLCPP_ERROR_THROTTLE(get_logger(), *clock_, 2000,
+          "Feedback stale: %.0f ms since last update (limit %.0f ms). Writes disabled until feedback resumes.",
+          age * 1000.0, feedback_stale_timeout_sec_ * 1000.0);
+      }
     }
   }
 
@@ -591,8 +610,20 @@ hardware_interface::return_type MyArmHardware::write(
   {
     if (!initial_positions_received_)
     {
+      double age_ms = 0.0;
+      if (last_feedback_time_.nanoseconds() > 0) {
+        age_ms = std::max(0.0,
+          (get_clock()->now() - last_feedback_time_).seconds() * 1000.0);
+      }
       RCLCPP_WARN_THROTTLE(get_logger(), *clock_, 2000,
-        "Initial positions not yet received; skipping write().");
+        "Skipping write(): waiting for fresh feedback (last update %.0f ms ago).",
+        age_ms);
+      return hardware_interface::return_type::OK;
+    }
+    if (!reader_ok_)
+    {
+      RCLCPP_WARN_THROTTLE(get_logger(), *clock_, 2000,
+        "Reader not OK; skipping write().");
       return hardware_interface::return_type::OK;
     }
     // Build frame: 0xFF + 6*int16(le) + checksum

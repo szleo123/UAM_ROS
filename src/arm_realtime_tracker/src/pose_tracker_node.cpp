@@ -224,26 +224,27 @@ private:
       q.normalize();
     target.pose.orientation = tf2::toMsg(q);
 
+    PoseStamped commanded_pose = target;
     if (std::abs(approach_offset_m_) > 1e-6)
     {
       tf2::Matrix3x3 rot(q);
       tf2::Vector3 offset(0.0, 0.0, -approach_offset_m_);
       tf2::Vector3 shift = rot * offset;
-      target.pose.position.x += shift.x();
-      target.pose.position.y += shift.y();
-      target.pose.position.z += shift.z();
+      commanded_pose.pose.position.x += shift.x();
+      commanded_pose.pose.position.y += shift.y();
+      commanded_pose.pose.position.z += shift.z();
     }
 
-    // Deadband: compare current EE vs target EE using TF (not MoveIt CSM)
+    // Deadband: compare current EE vs commanded EE using TF (not MoveIt CSM)
     PoseStamped current;
     if (!getCurrentEEPoseTF(current))
       return;
 
-    const double dx = current.pose.position.x - target.pose.position.x;
-    const double dy = current.pose.position.y - target.pose.position.y;
-    const double dz = current.pose.position.z - target.pose.position.z;
+    const double dx = current.pose.position.x - commanded_pose.pose.position.x;
+    const double dy = current.pose.position.y - commanded_pose.pose.position.y;
+    const double dz = current.pose.position.z - commanded_pose.pose.position.z;
     const double pos_err = std::sqrt(dx*dx + dy*dy + dz*dz);
-    const double ang_err = quatShortestAngle(current.pose.orientation, target.pose.orientation);
+    const double ang_err = quatShortestAngle(current.pose.orientation, commanded_pose.pose.orientation);
 
     RCLCPP_INFO_THROTTLE(get_logger(), throttle_clock_, 1000,
       "EE error: pos = %.2f mm (thr=%.2f), ang = %.2f deg (thr=%.2f)",
@@ -255,7 +256,7 @@ private:
 
     // Plan & execute synchronously
     move_group_->setStartStateToCurrentState();  // fine even if CSM occasionally warns
-    if (!move_group_->setPoseTarget(target.pose, ee_link_))
+    if (!move_group_->setPoseTarget(commanded_pose.pose, ee_link_))
     {
       RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock_, 1000,
                            "Failed to set target pose (IK).");

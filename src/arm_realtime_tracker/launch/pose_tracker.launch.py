@@ -123,7 +123,7 @@ def generate_launch_description():
             {"deadband_pos_m": 0.005},
             {"deadband_rot_rad": 0.02},
             {"target_timeout_sec": 0.3},
-            {"approach_offset_m": 0.10},
+            {"approach_offset_m": 0.20},
         ],
     )
 
