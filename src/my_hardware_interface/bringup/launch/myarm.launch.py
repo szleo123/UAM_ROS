@@ -119,12 +119,18 @@ def generate_launch_description():
         )
     )
 
+    handeye_publisher = Node(package='easy_handeye2', executable='handeye_publisher', name='handeye_publisher', parameters=[{
+        'name': 'handeye_calib',
+        'calibration_file': '/home/nvidia/.ros2/easy_handeye2/calibrations/handeye_calib.calib',
+    }])
+
     nodes = [
         control_node,
         robot_state_pub_node,
         joint_state_broadcaster_spawner,
         delay_robot_controller_spawner,
         delay_rviz_after_joint_state_broadcaster_spawner,
+        handeye_publisher
     ]
 
     return LaunchDescription(declared_arguments + nodes)

@@ -122,6 +122,8 @@ def generate_launch_description():
             {"exec_period_ms": 100},
             {"deadband_pos_m": 0.005},
             {"deadband_rot_rad": 0.02},
+            {"target_timeout_sec": 0.3},
+            {"approach_offset_m": 0.10},
         ],
     )
 
@@ -129,6 +131,11 @@ def generate_launch_description():
     start_tracker_after_jsb = RegisterEventHandler(
         OnProcessExit(target_action=joint_state_broadcaster_spawner, on_exit=[tracker])
     )
+
+    handeye_publisher = Node(package='easy_handeye2', executable='handeye_publisher', name='handeye_publisher', parameters=[{
+        'name': 'handeye_calib',
+        'calibration_file': '/home/nvidia/.ros2/easy_handeye2/calibrations/handeye_calib.calib',
+    }])
 
     return LaunchDescription(
         [
@@ -139,6 +146,7 @@ def generate_launch_description():
             move_group_node,
             rviz_node,
             robot_state_publisher_node,
-            start_tracker_after_jsb
+            start_tracker_after_jsb,
+            handeye_publisher,
         ]
     )   

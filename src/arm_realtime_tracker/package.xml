@@ -30,6 +30,7 @@
   <!-- For launch file -->
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>easy_handeye2</exec_depend>
 
   <exec_depend>moveit_configs_utils</exec_depend>
 

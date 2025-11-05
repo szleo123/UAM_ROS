@@ -2,6 +2,7 @@
 #include <optional>
 #include <string>
 #include <atomic>
+#include <limits>
 
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
@@ -49,6 +50,8 @@ public:
     pos_thr_m_      = this->declare_parameter<double>("deadband_pos_m", 0.005);   // 5mm
     ang_thr_rad_    = this->declare_parameter<double>("deadband_rot_rad", 0.02);  // ~1.15 deg
     stale_js_sec_   = this->declare_parameter<double>("stale_joint_state_sec", 0.5);
+    target_timeout_sec_ = this->declare_parameter<double>("target_timeout_sec", 0.3);
+    approach_offset_m_ = this->declare_parameter<double>("approach_offset_m", 0.0);
 
     RCLCPP_INFO(get_logger(),
       "Starting with: group='%s', ee_link='%s', target_frame='%s', topic='%s'",
@@ -117,7 +120,10 @@ private:
   void poseCallback(const PoseStamped& msg)
   {
     latest_target_pose_ = msg;
-    last_pose_stamp_ = now();
+    if (msg.header.stamp.sec == 0 && msg.header.stamp.nanosec == 0)
+      last_pose_stamp_ = now();
+    else
+      last_pose_stamp_ = rclcpp::Time(msg.header.stamp);
   }
 
   bool freshJointStateAvailable() const
@@ -154,6 +160,20 @@ private:
   {
     if (!init_done_ || !latest_target_pose_.has_value() || executing_)
       return;
+
+    const auto now_time = this->now();
+    if (target_timeout_sec_ > 1e-6)
+    {
+      const double target_age = (now_time - last_pose_stamp_).seconds();
+      if (target_age > target_timeout_sec_)
+      {
+        RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock_, 2000,
+                             "Skipping stale target (age %.0f ms > %.0f ms)",
+                             target_age * 1000.0, target_timeout_sec_ * 1000.0);
+        latest_target_pose_.reset();
+        return;
+      }
+    }
 
     // Require a recent /joint_states sample
     if (!freshJointStateAvailable())
@@ -196,6 +216,24 @@ private:
       return;
     }
 
+    tf2::Quaternion q;
+    tf2::fromMsg(target.pose.orientation, q);
+    if (q.length2() <= std::numeric_limits<double>::epsilon())
+      q.setValue(0.0, 0.0, 0.0, 1.0);
+    else
+      q.normalize();
+    target.pose.orientation = tf2::toMsg(q);
+
+    if (std::abs(approach_offset_m_) > 1e-6)
+    {
+      tf2::Matrix3x3 rot(q);
+      tf2::Vector3 offset(0.0, 0.0, -approach_offset_m_);
+      tf2::Vector3 shift = rot * offset;
+      target.pose.position.x += shift.x();
+      target.pose.position.y += shift.y();
+      target.pose.position.z += shift.z();
+    }
+
     // Deadband: compare current EE vs target EE using TF (not MoveIt CSM)
     PoseStamped current;
     if (!getCurrentEEPoseTF(current))
@@ -217,7 +255,13 @@ private:
 
     // Plan & execute synchronously
     move_group_->setStartStateToCurrentState();  // fine even if CSM occasionally warns
-    move_group_->setPoseTarget(target.pose, ee_link_);
+    if (!move_group_->setPoseTarget(target.pose, ee_link_))
+    {
+      RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock_, 1000,
+                           "Failed to set target pose (IK).");
+      move_group_->clearPoseTargets();
+      return;
+    }
 
     MoveGroupInterface::Plan plan;
     bool ok = (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
@@ -256,6 +300,8 @@ private:
   double pos_thr_m_{0.005};
   double ang_thr_rad_{0.02};
   double stale_js_sec_{0.5};
+  double target_timeout_sec_{0.3};
+  double approach_offset_m_{0.0};
   mutable rclcpp::Clock throttle_clock_{RCL_ROS_TIME};
   // ROS
   rclcpp::Subscription<PoseStamped>::SharedPtr pose_sub_;

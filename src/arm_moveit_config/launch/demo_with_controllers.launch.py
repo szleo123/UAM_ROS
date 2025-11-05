@@ -98,6 +98,11 @@ def generate_launch_description():
         parameters=[moveit_config.robot_description],
     )
 
+    handeye_publisher = Node(package='easy_handeye2', executable='handeye_publisher', name='handeye_publisher', parameters=[{
+        'name': 'handeye_calib',
+        'calibration_file': '/home/nvidia/.ros2/easy_handeye2/calibrations/handeye_calib.calib',
+    }])
+
     return LaunchDescription(
         [
             ros2_control_node,
@@ -107,5 +112,6 @@ def generate_launch_description():
             move_group_node,
             rviz_node,
             robot_state_publisher_node,
+            handeye_publisher,
         ]
     )   

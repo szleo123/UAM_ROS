@@ -131,6 +131,11 @@ def generate_launch_description():
         output="screen",
     )
 
+    handeye_publisher = Node(package='easy_handeye2', executable='handeye_publisher', name='handeye_publisher', parameters=[{
+        'name': 'handeye_calib',
+        'calibration_file': '/home/nvidia/.ros2/easy_handeye2/calibrations/handeye_calib.calib',
+    }])
+
     return LaunchDescription([
         ros2_control_node,
         joint_state_broadcaster_spawner,
@@ -141,4 +146,5 @@ def generate_launch_description():
         robot_state_publisher_node,
         servo_node,
         pose_servo_tracker,
+        handeye_publisher,
     ])
