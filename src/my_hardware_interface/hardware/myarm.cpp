@@ -539,12 +539,6 @@ hardware_interface::return_type MyArmHardware::read(
     }
   }
 
-  // if (gripper_ok_){
-  //   double prev = hw_states_[6];
-  //   hw_states_[6] = hw_commands_[6];
-  //   hw_velocities_[6] = (hw_states_[6] - prev) / period.seconds();
-  // }
-
   if (gripper_ok_) {
     try {
       std::scoped_lock gk(gripper_mtx_);

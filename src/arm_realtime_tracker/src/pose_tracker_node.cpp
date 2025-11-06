@@ -235,6 +235,11 @@ private:
       commanded_pose.pose.position.z += shift.z();
     }
 
+    RCLCPP_INFO_THROTTLE(get_logger(), throttle_clock_, 1000,
+      "Target xyz: [%.2f %.2f %.2f] m, commanded xyz: [%.2f %.2f %.2f] m",
+      target.pose.position.x, target.pose.position.y, target.pose.position.z,
+      commanded_pose.pose.position.x, commanded_pose.pose.position.y, commanded_pose.pose.position.z);
+
     // Deadband: compare current EE vs commanded EE using TF (not MoveIt CSM)
     PoseStamped current;
     if (!getCurrentEEPoseTF(current))
@@ -252,7 +257,12 @@ private:
       ang_err*180.0/M_PI, ang_thr_rad_*180.0/M_PI);
 
     if (pos_err < pos_thr_m_ && ang_err < ang_thr_rad_)
+    {
+      RCLCPP_INFO_THROTTLE(get_logger(), throttle_clock_, 1000,
+        "Within deadband; holding position (pos_err=%.2f mm, ang_err=%.2f deg)",
+        pos_err*1000.0, ang_err*180.0/M_PI);
       return;  // within tolerance; hold position
+    }
 
     // Plan & execute synchronously
     move_group_->setStartStateToCurrentState();  // fine even if CSM occasionally warns
