@@ -22,6 +22,7 @@ find_package(moveit_ros_planning_interface REQUIRED)
 
 add_executable(pose_tracker_node src/pose_tracker_node.cpp)
 add_executable(pose_servo_tracker_node src/pose_servo_tracker_node.cpp)
+add_executable(grasp_tracker_node src/grasp_tracker_node.cpp)
 
 ament_target_dependencies(pose_tracker_node
   rclcpp rclcpp_action rclcpp_components
@@ -34,9 +35,16 @@ ament_target_dependencies(pose_servo_tracker_node
   geometry_msgs std_msgs
   tf2 tf2_ros tf2_geometry_msgs
 )
+ament_target_dependencies(grasp_tracker_node
+  rclcpp rclcpp_action rclcpp_components
+  geometry_msgs std_msgs
+  tf2 tf2_ros tf2_geometry_msgs
+  moveit_ros_planning_interface
+)
 
 install(TARGETS pose_tracker_node 
   pose_servo_tracker_node
+  grasp_tracker_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch

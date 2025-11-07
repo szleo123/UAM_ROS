@@ -424,12 +424,14 @@ hardware_interface::return_type MyArmHardware::read(
 
   if (!reader_ok_ && !gripper_ok_)
   {
+     const double dt = period.seconds();
     for (size_t i = 0; i < hw_states_.size(); ++i)
     {
       double prev = hw_states_[i];
       hw_states_[i] = hw_commands_[i];  // snap to command for perfect sim
-      hw_velocities_[i] = (hw_states_[i] - prev) / period.seconds(); // calculate velocity
+      hw_velocities_[i] = (hw_states_[i] - prev) / dt; // calculate velocity
     }
+
     RCLCPP_WARN_THROTTLE(get_logger(), *clock_, 2000, "Readers not OK; skipping read().");
     return hardware_interface::return_type::OK;
   } 
