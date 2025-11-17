@@ -116,7 +116,7 @@ def generate_launch_description():
             {"arm_approach_named_target": "approach"},
             {"target_timeout_sec": 0.3},
             {"gripper_joint_name": "joint7"},
-            {"grasp_detection_threshold": 0.0},
+            {"grasp_detection_threshold": 0.003},
             {"arm_home_named_target": "zero"},
             {"gripper_close_named_target": "close"},
             {"gripper_open_named_target": "open"},

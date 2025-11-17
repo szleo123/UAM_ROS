@@ -1,32 +1,42 @@
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
-#include <atomic>
-#include <limits>
+#include <unordered_map>
 
-#include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Vector3.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
-#include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <moveit/move_group_interface/move_group_interface.h>
+#include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
 
 using geometry_msgs::msg::PoseStamped;
 using moveit::planning_interface::MoveGroupInterface;
 
-static double quatShortestAngle(const geometry_msgs::msg::Quaternion &a,
-                                const geometry_msgs::msg::Quaternion &b)
+namespace
 {
-  // angle = 2 * acos(|dot(a,b)|)
-  const double dot = a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w;
-  double d = std::min(1.0, std::max(-1.0, std::fabs(dot)));
+double quatShortestAngle(const geometry_msgs::msg::Quaternion &a,
+                         const geometry_msgs::msg::Quaternion &b)
+{
+  const double dot = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+  const double d = std::min(1.0, std::max(-1.0, std::fabs(dot)));
   return 2.0 * std::acos(d);
 }
+}  // namespace
 
 class PoseTrackerNode : public rclcpp::Node
 {
@@ -36,105 +46,157 @@ public:
     tf_buffer_(this->get_clock()),
     tf_listener_(tf_buffer_)
   {
-    // Parameters
-    group_name_   = this->declare_parameter<std::string>("group_name", "arm");
-    ee_link_      = this->declare_parameter<std::string>("ee_link", "link6");
-    target_frame_ = this->declare_parameter<std::string>("target_frame", "base_link");
-    topic_name_   = this->declare_parameter<std::string>("target_topic", "/desired_pose");
+    group_arm_name_      = this->declare_parameter<std::string>("arm_group_name", "arm");
+    group_gripper_name_  = this->declare_parameter<std::string>("gripper_group_name", "gripper");
+    ee_link_             = this->declare_parameter<std::string>("ee_link", "tool0");
+    target_frame_        = this->declare_parameter<std::string>("target_frame", "base_link");
+    target_topic_        = this->declare_parameter<std::string>("target_topic", "/desired_pose");
 
-    velocity_scale_ = this->declare_parameter<double>("velocity_scale", 0.1);
-    accel_scale_    = this->declare_parameter<double>("accel_scale", 0.1);
-    plan_time_      = this->declare_parameter<double>("planning_time", 0.5);
-    exec_period_ms_ = this->declare_parameter<int>("exec_period_ms", 100);
+    velocity_scale_      = this->declare_parameter<double>("velocity_scale", 0.5);
+    accel_scale_         = this->declare_parameter<double>("accel_scale", 0.5);
+    plan_time_           = this->declare_parameter<double>("planning_time", 1.0);
+    exec_period_ms_      = this->declare_parameter<int>("exec_period_ms", 100);
 
-    pos_thr_m_      = this->declare_parameter<double>("deadband_pos_m", 0.005);   // 5mm
-    ang_thr_rad_    = this->declare_parameter<double>("deadband_rot_rad", 0.02);  // ~1.15 deg
-    stale_js_sec_   = this->declare_parameter<double>("stale_joint_state_sec", 0.5);
-    target_timeout_sec_ = this->declare_parameter<double>("target_timeout_sec", 0.3);
-    approach_offset_m_ = this->declare_parameter<double>("approach_offset_m", 0.0);
+    arm_approach_named_target_ = this->declare_parameter<std::string>("arm_approach_named_target", "approach");
+    arm_home_named_target_     = this->declare_parameter<std::string>("arm_home_named_target", "zero");
+    gripper_close_named_target_ = this->declare_parameter<std::string>("gripper_close_named_target", "close");
+    gripper_open_named_target_  = this->declare_parameter<std::string>("gripper_open_named_target", "open");
+    gripper_joint_name_         = this->declare_parameter<std::string>("gripper_joint_name", "joint7");
+
+    pre_grasp_delay_sec_ = this->declare_parameter<double>("pre_grasp_delay_sec", 0.5);
+    target_timeout_sec_  = this->declare_parameter<double>("target_timeout_sec", 0.3);
+    stale_js_sec_        = this->declare_parameter<double>("stale_joint_state_sec", 0.5);
+    grasp_detection_threshold_ = this->declare_parameter<double>("grasp_detection_threshold", 0.005);
+    approach_offset_m_   = this->declare_parameter<double>("approach_offset_m", 0.2);
+    target_stability_hold_sec_ = this->declare_parameter<double>("target_stability_hold_sec", 0.25);
+    target_stability_pos_thr_  = this->declare_parameter<double>("target_stability_pos_m", 0.05);
+    target_stability_ang_thr_  = this->declare_parameter<double>("target_stability_ang_rad", 0.1);
+
+    pos_thr_m_        = this->declare_parameter<double>("deadband_pos_m", 0.005);
+    ang_thr_rad_      = this->declare_parameter<double>("deadband_rot_rad", 0.02);
 
     RCLCPP_INFO(get_logger(),
-      "Starting with: group='%s', ee_link='%s', target_frame='%s', topic='%s'",
-      group_name_.c_str(), ee_link_.c_str(), target_frame_.c_str(), topic_name_.c_str());
+      "Starting pose tracker with arm='%s', gripper='%s', ee_link='%s', target_frame='%s', topic='%s'",
+      group_arm_name_.c_str(), group_gripper_name_.c_str(), ee_link_.c_str(),
+      target_frame_.c_str(), target_topic_.c_str());
 
-    // Subscribe to desired pose
     pose_sub_ = create_subscription<PoseStamped>(
-      topic_name_, rclcpp::SensorDataQoS(),
+      target_topic_, rclcpp::SensorDataQoS(),
       [this](const PoseStamped::SharedPtr msg) { this->poseCallback(*msg); });
 
-    // Subscribe to /joint_states with SensorDataQoS and track timestamp
     joint_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
       "joint_states", rclcpp::SensorDataQoS(),
-      [this](const sensor_msgs::msg::JointState::SharedPtr js)
-      {
-        if (js->header.stamp.sec == 0 && js->header.stamp.nanosec == 0)
-          last_js_stamp_ = this->now();  // fallback if publisher uses zero stamp
-        else
-          last_js_stamp_ = rclcpp::Time(js->header.stamp);
+      [this](const sensor_msgs::msg::JointState::SharedPtr js) { this->jointStateCallback(*js); });
 
-        have_js_ = true;
-      });
-
-    // Timer (planning loop)
     timer_ = this->create_wall_timer(
       std::chrono::milliseconds(exec_period_ms_),
       std::bind(&PoseTrackerNode::timerCallback, this));
   }
 
-  // Call this ONCE from main() after constructing the node
-  void initialize_move_group(const rclcpp::Node::SharedPtr& node_ptr)
+  void initialize_move_groups(const rclcpp::Node::SharedPtr &node_ptr)
   {
     try
     {
-      move_group_ = std::make_unique<MoveGroupInterface>(node_ptr, group_name_);
+      move_group_arm_ = std::make_unique<MoveGroupInterface>(node_ptr, group_arm_name_);
+      move_group_arm_->setEndEffectorLink(ee_link_);
+      move_group_arm_->setMaxVelocityScalingFactor(velocity_scale_);
+      move_group_arm_->setMaxAccelerationScalingFactor(accel_scale_);
+      move_group_arm_->setPlanningTime(plan_time_);
+      move_group_arm_->setPoseReferenceFrame(target_frame_);
+      move_group_arm_->setPlanningPipelineId("pilz_industrial_motion_planner");
+      move_group_arm_->setPlannerId("PTP");
+      move_group_arm_->startStateMonitor();
 
-      if (!ee_link_.empty())
-        move_group_->setEndEffectorLink(ee_link_);
+      move_group_gripper_ = std::make_unique<MoveGroupInterface>(node_ptr, group_gripper_name_);
+      move_group_gripper_->setMaxVelocityScalingFactor(1.0);
+      move_group_gripper_->setMaxAccelerationScalingFactor(1.0);
+      move_group_gripper_->setPlanningTime(plan_time_);
+      move_group_gripper_->startStateMonitor();
 
-      move_group_->setMaxVelocityScalingFactor(velocity_scale_);
-      move_group_->setMaxAccelerationScalingFactor(accel_scale_);
-      move_group_->setPlanningTime(plan_time_);
-      move_group_->setPoseReferenceFrame(target_frame_);
-      move_group_->setPlanningPipelineId("pilz_industrial_motion_planner");
-      move_group_->setPlannerId("PTP");
-      
-
-      // Keep MoveIt's internal state mirror updated in the background.
-      // (We will NOT use it for EE pose; we use TF instead.)
-      move_group_->startStateMonitor();
-
-      RCLCPP_INFO(get_logger(),
-                  "MoveGroupInterface initialized. Planning frame='%s', EE link='%s'",
-                  move_group_->getPlanningFrame().c_str(),
-                  move_group_->getEndEffectorLink().c_str());
+      auto close_targets = move_group_gripper_->getNamedTargetValues(gripper_close_named_target_);
+      auto joint_it = close_targets.find(gripper_joint_name_);
+      if (joint_it != close_targets.end())
+        planned_gripper_close_position_ = joint_it->second;
 
       init_done_ = true;
+      RCLCPP_INFO(get_logger(), "MoveGroup interfaces ready. Planned gripper close position=%.3f",
+                  planned_gripper_close_position_);
+
+      if (!executeGripperNamed(gripper_open_named_target_))
+        RCLCPP_WARN(get_logger(), "Failed to command initial gripper open position.");
+      else
+        RCLCPP_INFO(get_logger(), "Gripper opened to '%s' on startup.", gripper_open_named_target_.c_str());
     }
-    catch (const std::exception& e)
+    catch (const std::exception &e)
     {
-      RCLCPP_ERROR(get_logger(), "MoveGroupInterface init failed: %s", e.what());
+      RCLCPP_ERROR(get_logger(), "Failed to initialize MoveGroup interfaces: %s", e.what());
     }
   }
 
 private:
-  void poseCallback(const PoseStamped& msg)
+  enum class Stage
+  {
+    WAIT_FOR_TARGET = 0,
+    MOVE_TO_APPROACH,
+    MOVE_TO_OFFSET,
+    MOVE_TO_DESIRED,
+    PRE_GRASP_DELAY,
+    CLOSE_GRIPPER,
+    RETURN_TO_OFFSET,
+    RETURN_TO_APPROACH,
+    MOVE_HOME,
+    EVALUATE_GRASP
+  };
+
+  void poseCallback(const PoseStamped &msg)
   {
     latest_target_pose_ = msg;
     if (msg.header.stamp.sec == 0 && msg.header.stamp.nanosec == 0)
       last_pose_stamp_ = now();
     else
       last_pose_stamp_ = rclcpp::Time(msg.header.stamp);
+    target_pose_seq_.fetch_add(1, std::memory_order_relaxed);
+
+    PoseStamped normalized = msg;
+    if (transformTarget(normalized))
+      updateTargetStability(normalized);
+  }
+
+  void jointStateCallback(const sensor_msgs::msg::JointState &js)
+  {
+    std::scoped_lock lock(joint_mutex_);
+
+    if (js.header.stamp.sec == 0 && js.header.stamp.nanosec == 0)
+      last_js_stamp_ = this->now();
+    else
+      last_js_stamp_ = rclcpp::Time(js.header.stamp);
+
+    joint_positions_.clear();
+    for (size_t i = 0; i < js.name.size() && i < js.position.size(); ++i)
+      joint_positions_[js.name[i]] = js.position[i];
+
+    have_js_ = true;
   }
 
   bool freshJointStateAvailable() const
   {
-    if (!have_js_) return false;
+    if (!have_js_)
+      return false;
+
     const double age = (this->now() - last_js_stamp_).seconds();
     return age <= stale_js_sec_;
   }
 
-  // Get current EE pose from TF (target_frame_ -> ee_link_)
-  bool getCurrentEEPoseTF(PoseStamped& out) const
+  std::optional<double> getJointPosition(const std::string &joint) const
+  {
+    std::scoped_lock lock(joint_mutex_);
+    auto it = joint_positions_.find(joint);
+    if (it == joint_positions_.end())
+      return std::nullopt;
+    return it->second;
+  }
+
+  bool getCurrentEEPoseTF(PoseStamped &out) const
   {
     try
     {
@@ -147,7 +209,7 @@ private:
       out.pose.orientation = tf.transform.rotation;
       return true;
     }
-    catch (const std::exception& e)
+    catch (const std::exception &e)
     {
       RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock_, 2000,
                            "TF lookup %s -> %s failed: %s",
@@ -156,43 +218,18 @@ private:
     }
   }
 
-  void timerCallback()
+  bool latestTargetFresh() const
   {
-    if (!init_done_ || !latest_target_pose_.has_value() || executing_)
-      return;
+    if (!latest_target_pose_.has_value())
+      return false;
+    if (target_timeout_sec_ <= 1e-6)
+      return true;
+    const double age = (this->now() - last_pose_stamp_).seconds();
+    return age <= target_timeout_sec_;
+  }
 
-    const auto now_time = this->now();
-    if (target_timeout_sec_ > 1e-6)
-    {
-      const double target_age = (now_time - last_pose_stamp_).seconds();
-      if (target_age > target_timeout_sec_)
-      {
-        RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock_, 2000,
-                             "Skipping stale target (age %.0f ms > %.0f ms)",
-                             target_age * 1000.0, target_timeout_sec_ * 1000.0);
-        latest_target_pose_.reset();
-        return;
-      }
-    }
-
-    // Require a recent /joint_states sample
-    if (!freshJointStateAvailable())
-    {
-      RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock_, 2000,
-                           "No fresh /joint_states (>%.0f ms); skipping this cycle",
-                           stale_js_sec_ * 1000.0);
-      return;
-    }
-
-    // If we just executed, wait for a newer joint state before replanning
-    if (waiting_fresh_after_exec_ && last_js_stamp_ <= exec_completed_js_stamp_)
-      return;
-    waiting_fresh_after_exec_ = false;
-
-    // Copy the latest target
-    PoseStamped target = *latest_target_pose_;
-
-    // Transform target into planning frame if needed
+  bool transformTarget(PoseStamped &target) const
+  {
     try
     {
       if (target.header.frame_id.empty())
@@ -200,20 +237,18 @@ private:
         target.header.frame_id = target_frame_;
         target.header.stamp = this->now();
       }
-
       if (target.header.frame_id != target_frame_)
       {
-        auto tf = tf_buffer_.lookupTransform(
-          target_frame_, target.header.frame_id, tf2::TimePointZero);
+        auto tf = tf_buffer_.lookupTransform(target_frame_, target.header.frame_id, tf2::TimePointZero);
         tf2::doTransform(target, target, tf);
         target.header.frame_id = target_frame_;
       }
     }
-    catch (const std::exception& e)
+    catch (const std::exception &e)
     {
       RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock_, 2000,
-                           "TF transform of target failed: %s", e.what());
-      return;
+                           "Failed to transform target: %s", e.what());
+      return false;
     }
 
     tf2::Quaternion q;
@@ -223,131 +258,658 @@ private:
     else
       q.normalize();
     target.pose.orientation = tf2::toMsg(q);
+    return true;
+  }
 
-    PoseStamped commanded_pose = target;
-    if (std::abs(approach_offset_m_) > 1e-6)
+  bool computeLatestTargetPose(PoseStamped &target_pose)
+  {
+    if (!latest_target_pose_.has_value())
+      return false;
+    target_pose = *latest_target_pose_;
+    if (!transformTarget(target_pose))
+      return false;
+    return true;
+  }
+
+  bool computeOffsetPose(const PoseStamped &target_pose, PoseStamped &offset_pose) const
+  {
+    offset_pose = target_pose;
+    if (std::abs(approach_offset_m_) <= 1e-6)
+      return true;
+
+    tf2::Quaternion q;
+    tf2::fromMsg(target_pose.pose.orientation, q);
+    tf2::Matrix3x3 rot(q);
+    tf2::Vector3 offset(0.0, 0.0, -approach_offset_m_);
+    tf2::Vector3 shift = rot * offset;
+
+    offset_pose.pose.position.x += shift.x();
+    offset_pose.pose.position.y += shift.y();
+    offset_pose.pose.position.z += shift.z();
+    return true;
+  }
+
+  bool planPoseOnly(const PoseStamped &target_pose)
+  {
+    move_group_arm_->setStartStateToCurrentState();
+    if (!move_group_arm_->setPoseTarget(target_pose.pose, ee_link_))
     {
-      tf2::Matrix3x3 rot(q);
-      tf2::Vector3 offset(0.0, 0.0, -approach_offset_m_);
-      tf2::Vector3 shift = rot * offset;
-      commanded_pose.pose.position.x += shift.x();
-      commanded_pose.pose.position.y += shift.y();
-      commanded_pose.pose.position.z += shift.z();
-    }
-
-    RCLCPP_INFO_THROTTLE(get_logger(), throttle_clock_, 1000,
-      "Target xyz: [%.2f %.2f %.2f] m, commanded xyz: [%.2f %.2f %.2f] m",
-      target.pose.position.x, target.pose.position.y, target.pose.position.z,
-      commanded_pose.pose.position.x, commanded_pose.pose.position.y, commanded_pose.pose.position.z);
-
-    // Deadband: compare current EE vs commanded EE using TF (not MoveIt CSM)
-    PoseStamped current;
-    if (!getCurrentEEPoseTF(current))
-      return;
-
-    const double dx = current.pose.position.x - commanded_pose.pose.position.x;
-    const double dy = current.pose.position.y - commanded_pose.pose.position.y;
-    const double dz = current.pose.position.z - commanded_pose.pose.position.z;
-    const double pos_err = std::sqrt(dx*dx + dy*dy + dz*dz);
-    const double ang_err = quatShortestAngle(current.pose.orientation, commanded_pose.pose.orientation);
-
-    RCLCPP_INFO_THROTTLE(get_logger(), throttle_clock_, 1000,
-      "EE error: pos = %.2f mm (thr=%.2f), ang = %.2f deg (thr=%.2f)",
-      pos_err*1000.0, pos_thr_m_*1000.0,
-      ang_err*180.0/M_PI, ang_thr_rad_*180.0/M_PI);
-
-    if (pos_err < pos_thr_m_ && ang_err < ang_thr_rad_)
-    {
-      RCLCPP_INFO_THROTTLE(get_logger(), throttle_clock_, 1000,
-        "Within deadband; holding position (pos_err=%.2f mm, ang_err=%.2f deg)",
-        pos_err*1000.0, ang_err*180.0/M_PI);
-      return;  // within tolerance; hold position
-    }
-
-    // Plan & execute synchronously
-    move_group_->setStartStateToCurrentState();  // fine even if CSM occasionally warns
-    if (!move_group_->setPoseTarget(commanded_pose.pose, ee_link_))
-    {
-      RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock_, 1000,
-                           "Failed to set target pose (IK).");
-      move_group_->clearPoseTargets();
-      return;
+      move_group_arm_->clearPoseTargets();
+      return false;
     }
 
     MoveGroupInterface::Plan plan;
-    bool ok = (move_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
-    if (!ok)
+    const auto code = move_group_arm_->plan(plan);
+    move_group_arm_->clearPoseTargets();
+
+    return code == moveit::core::MoveItErrorCode::SUCCESS;
+  }
+
+  bool validateLatchedGoalReachable()
+  {
+    if (!latched_offset_pose_.has_value() || !latched_target_pose_.has_value())
+      return false;
+
+    if (!planPoseOnly(*latched_offset_pose_))
     {
-      RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock_, 1000,
-                           "Planning failed to target pose.");
-      move_group_->clearPoseTargets();
+      RCLCPP_WARN(get_logger(), "Offset pose is unreachable; waiting for a new target.");
+      return false;
+    }
+
+    if (!planPoseOnly(*latched_target_pose_))
+    {
+      RCLCPP_WARN(get_logger(), "Desired pose is unreachable; waiting for a new target.");
+      return false;
+    }
+
+    return true;
+  }
+
+  void releaseLatchedTarget()
+  {
+    latched_target_pose_.reset();
+    latched_offset_pose_.reset();
+    target_locked_ = false;
+    latched_target_seq_ = 0;
+  }
+
+  void abortSequence(const std::string &reason)
+  {
+    if (!reason.empty())
+      RCLCPP_WARN(get_logger(), "%s", reason.c_str());
+    releaseLatchedTarget();
+    pre_grasp_delay_active_ = false;
+    stage_ = Stage::WAIT_FOR_TARGET;
+    grasp_completed_ = false;
+  }
+
+  bool atPoseTolerance(const PoseStamped &target_pose)
+  {
+    PoseStamped current_pose;
+    if (!getCurrentEEPoseTF(current_pose))
+      return false;
+
+    const double dx = current_pose.pose.position.x - target_pose.pose.position.x;
+    const double dy = current_pose.pose.position.y - target_pose.pose.position.y;
+    const double dz = current_pose.pose.position.z - target_pose.pose.position.z;
+    const double pos_err = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const double ang_err = quatShortestAngle(current_pose.pose.orientation, target_pose.pose.orientation);
+
+    if (pos_err < pos_thr_m_ && ang_err < ang_thr_rad_)
+      return true;
+    return false;
+  }
+
+  bool refreshLatchedTargetIfNew()
+  {
+    if (!latestTargetFresh())
+      return true;
+
+    const uint64_t latest_seq = target_pose_seq_.load(std::memory_order_relaxed);
+    if (latest_seq == latched_target_seq_)
+      return true;
+
+    PoseStamped new_grasp_pose;
+    if (!computeLatestTargetPose(new_grasp_pose))
+      return false;
+
+    PoseStamped new_offset_pose;
+    if (!computeOffsetPose(new_grasp_pose, new_offset_pose))
+      return false;
+
+    auto prev_target = latched_target_pose_;
+    auto prev_offset = latched_offset_pose_;
+    const uint64_t prev_seq = latched_target_seq_;
+
+    latched_target_pose_ = new_grasp_pose;
+    latched_offset_pose_ = new_offset_pose;
+    latched_target_seq_ = latest_seq;
+
+    if (!validateLatchedGoalReachable())
+    {
+      latched_target_pose_ = prev_target;
+      latched_offset_pose_ = prev_offset;
+      latched_target_seq_ = prev_seq;
+      return false;
+    }
+
+    RCLCPP_INFO(get_logger(), "Updated desired pose to latest sequence (%lu).",
+                static_cast<unsigned long>(latest_seq));
+    return true;
+  }
+
+  void updateTargetStability(const PoseStamped &pose)
+  {
+    if (!stable_reference_pose_.has_value())
+    {
+      stable_reference_pose_ = pose;
+      target_stable_since_ = this->now();
       return;
     }
 
-    executing_ = true;
-    auto res = move_group_->execute(plan);
-    executing_ = false;
+    const double dx = stable_reference_pose_->pose.position.x - pose.pose.position.x;
+    const double dy = stable_reference_pose_->pose.position.y - pose.pose.position.y;
+    const double dz = stable_reference_pose_->pose.position.z - pose.pose.position.z;
+    const double pos_err = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const double ang_err = quatShortestAngle(stable_reference_pose_->pose.orientation, pose.pose.orientation);
 
-    // After execution, wait for the next joint state before considering replans
+    if (pos_err > target_stability_pos_thr_ || ang_err > target_stability_ang_thr_)
+    {
+      stable_reference_pose_ = pose;
+      target_stable_since_ = this->now();
+    }
+  }
+
+  bool targetStableEnough() const
+  {
+    if (target_stability_hold_sec_ <= 1e-6)
+      return true;
+    if (!stable_reference_pose_.has_value())
+      return false;
+    const double held = (this->now() - target_stable_since_).seconds();
+    return held >= target_stability_hold_sec_;
+  }
+
+  bool planAndExecuteArmPose(const PoseStamped &target_pose)
+  {
+    move_group_arm_->setStartStateToCurrentState();
+    if (!move_group_arm_->setPoseTarget(target_pose.pose, ee_link_))
+    {
+      RCLCPP_WARN(get_logger(), "Failed to set pose target for arm (IK).");
+      move_group_arm_->clearPoseTargets();
+      return false;
+    }
+
+    MoveGroupInterface::Plan plan;
+    if (move_group_arm_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS)
+    {
+      RCLCPP_WARN(get_logger(), "Planning failed for arm.");
+      move_group_arm_->clearPoseTargets();
+      return false;
+    }
+
+    executing_ = true;
+    auto exec_res = move_group_arm_->execute(plan);
+    executing_ = false;
+    move_group_arm_->clearPoseTargets();
+
     exec_completed_js_stamp_ = last_js_stamp_;
     waiting_fresh_after_exec_ = true;
 
-    if (res != moveit::core::MoveItErrorCode::SUCCESS)
-      RCLCPP_WARN(get_logger(), "Execution finished with error code %d", int(res.val));
+    if (exec_res != moveit::core::MoveItErrorCode::SUCCESS)
+    {
+      RCLCPP_WARN(get_logger(), "Arm execution returned error code %d", int(exec_res.val));
+      return false;
+    }
+    return true;
+  }
 
-    move_group_->clearPoseTargets();
+  bool executeGripperNamed(const std::string &named_target)
+  {
+    if (!move_group_gripper_->setNamedTarget(named_target))
+    {
+      RCLCPP_WARN(get_logger(), "Failed to set gripper named target '%s'", named_target.c_str());
+      return false;
+    }
+
+    MoveGroupInterface::Plan plan;
+    if (move_group_gripper_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS)
+    {
+      RCLCPP_WARN(get_logger(), "Planning failed for gripper target '%s'", named_target.c_str());
+      return false;
+    }
+
+    executing_ = true;
+    auto exec_res = move_group_gripper_->execute(plan);
+    executing_ = false;
+
+    exec_completed_js_stamp_ = last_js_stamp_;
+    waiting_fresh_after_exec_ = true;
+
+    if (exec_res != moveit::core::MoveItErrorCode::SUCCESS)
+    {
+      RCLCPP_WARN(get_logger(), "Gripper execution returned error code %d", int(exec_res.val));
+      return false;
+    }
+    return true;
+  }
+
+  bool executeArmNamed(const std::string &named_target)
+  {
+    if (!move_group_arm_->setNamedTarget(named_target))
+    {
+      RCLCPP_WARN(get_logger(), "Failed to set arm named target '%s'", named_target.c_str());
+      return false;
+    }
+
+    MoveGroupInterface::Plan plan;
+    if (move_group_arm_->plan(plan) != moveit::core::MoveItErrorCode::SUCCESS)
+    {
+      RCLCPP_WARN(get_logger(), "Planning failed for arm named target '%s'", named_target.c_str());
+      return false;
+    }
+
+    executing_ = true;
+    auto exec_res = move_group_arm_->execute(plan);
+    executing_ = false;
+
+    exec_completed_js_stamp_ = last_js_stamp_;
+    waiting_fresh_after_exec_ = true;
+
+    if (exec_res != moveit::core::MoveItErrorCode::SUCCESS)
+    {
+      RCLCPP_WARN(get_logger(), "Arm execution returned error code %d", int(exec_res.val));
+      return false;
+    }
+    return true;
+  }
+
+  void timerCallback()
+  {
+    if (!init_done_ || executing_)
+      return;
+
+    if (!freshJointStateAvailable())
+    {
+      RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock_, 2000,
+                           "No fresh /joint_states (>%.0f ms); holding.", stale_js_sec_ * 1000.0);
+      return;
+    }
+
+    if (waiting_fresh_after_exec_ && last_js_stamp_ <= exec_completed_js_stamp_)
+      return;
+
+    if (waiting_fresh_after_exec_)
+      waiting_fresh_after_exec_ = false;
+
+    if (target_locked_ && !latestTargetFresh())
+    {
+      RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock_, 2000,
+                           "Latched target timeout (%.0f ms); aborting sequence.",
+                           target_timeout_sec_ * 1000.0);
+      abortSequence("Latched target expired; waiting for new target.");
+      return;
+    }
+
+    switch (stage_)
+    {
+      case Stage::WAIT_FOR_TARGET:
+        handleWaitForTarget();
+        break;
+      case Stage::MOVE_TO_APPROACH:
+        handleMoveToApproach();
+        break;
+      case Stage::MOVE_TO_OFFSET:
+        handleMoveToOffset();
+        break;
+      case Stage::MOVE_TO_DESIRED:
+        handleMoveToDesired();
+        break;
+      case Stage::PRE_GRASP_DELAY:
+        handlePreGraspDelay();
+        break;
+      case Stage::CLOSE_GRIPPER:
+        handleCloseGripper();
+        break;
+      case Stage::RETURN_TO_OFFSET:
+        handleReturnToOffset();
+        break;
+      case Stage::RETURN_TO_APPROACH:
+        handleReturnToApproach();
+        break;
+      case Stage::MOVE_HOME:
+        handleMoveHome();
+        break;
+      case Stage::EVALUATE_GRASP:
+        handleEvaluateGrasp();
+        break;
+    }
+  }
+
+  void handleWaitForTarget()
+  {
+    if (grasp_completed_ || target_locked_)
+      return;
+
+    if (!latestTargetFresh())
+      return;
+
+    if (!targetStableEnough())
+    {
+      RCLCPP_DEBUG_THROTTLE(get_logger(), throttle_clock_, 1000,
+                            "Waiting for target to stabilize (%.2f s required).",
+                            target_stability_hold_sec_);
+      return;
+    }
+
+    PoseStamped grasp_pose;
+    if (!computeLatestTargetPose(grasp_pose))
+      return;
+
+    PoseStamped offset_pose;
+    if (!computeOffsetPose(grasp_pose, offset_pose))
+      return;
+
+    latched_target_pose_ = grasp_pose;
+    latched_offset_pose_ = offset_pose;
+    latched_target_seq_ = target_pose_seq_.load(std::memory_order_relaxed);
+
+    if (!validateLatchedGoalReachable())
+    {
+      releaseLatchedTarget();
+      return;
+    }
+
+    target_locked_ = true;
+    stage_ = Stage::MOVE_TO_APPROACH;
+    RCLCPP_INFO(get_logger(), "Latched target; Stage -> MOVE_TO_APPROACH");
+  }
+
+  void handleMoveToApproach()
+  {
+    if (!target_locked_)
+    {
+      abortSequence("Lost latched target before MOVE_TO_APPROACH.");
+      return;
+    }
+
+    if (!executeArmNamed(arm_approach_named_target_))
+    {
+      abortSequence("Failed to reach named approach pose; resetting.");
+      return;
+    }
+
+    stage_ = Stage::MOVE_TO_OFFSET;
+    RCLCPP_INFO(get_logger(), "Stage -> MOVE_TO_OFFSET");
+  }
+
+  void handleMoveToOffset()
+  {
+    if (!latched_offset_pose_.has_value())
+    {
+      abortSequence("Offset pose missing; resetting.");
+      return;
+    }
+
+    if (atPoseTolerance(*latched_offset_pose_))
+    {
+      stage_ = Stage::MOVE_TO_DESIRED;
+      RCLCPP_INFO(get_logger(), "Already at offset pose tolerance; Stage -> MOVE_TO_DESIRED");
+      return;
+    }
+
+    if (!planAndExecuteArmPose(*latched_offset_pose_))
+    {
+      abortSequence("Failed to move to offset pose.");
+      return;
+    }
+
+    stage_ = Stage::MOVE_TO_DESIRED;
+    RCLCPP_INFO(get_logger(), "Stage -> MOVE_TO_DESIRED");
+  }
+
+  void handleMoveToDesired()
+  {
+    if (!latched_target_pose_.has_value())
+    {
+      abortSequence("Latched target pose missing; resetting.");
+      return;
+    }
+
+    if (atPoseTolerance(*latched_target_pose_))
+    {
+      pre_grasp_delay_active_ = false;
+      stage_ = Stage::PRE_GRASP_DELAY;
+      RCLCPP_INFO(get_logger(), "Already at desired pose tolerance; Stage -> PRE_GRASP_DELAY");
+      return;
+    }
+
+    if (!planAndExecuteArmPose(*latched_target_pose_))
+    {
+      abortSequence("Failed to move to desired pose.");
+      return;
+    }
+
+    pre_grasp_delay_active_ = false;
+    stage_ = Stage::PRE_GRASP_DELAY;
+    RCLCPP_INFO(get_logger(), "Stage -> PRE_GRASP_DELAY");
+  }
+
+  void handlePreGraspDelay()
+  {
+    if (pre_grasp_delay_sec_ <= 1e-6)
+    {
+      stage_ = Stage::CLOSE_GRIPPER;
+      return;
+    }
+
+    if (!pre_grasp_delay_active_)
+    {
+      pre_grasp_delay_active_ = true;
+      pre_grasp_delay_start_ = this->now();
+      RCLCPP_INFO(get_logger(), "Pre-grasp delay started (%.2f s).", pre_grasp_delay_sec_);
+      return;
+    }
+
+    const double elapsed = (this->now() - pre_grasp_delay_start_).seconds();
+    if (elapsed >= pre_grasp_delay_sec_)
+    {
+      pre_grasp_delay_active_ = false;
+      stage_ = Stage::CLOSE_GRIPPER;
+      RCLCPP_INFO(get_logger(), "Pre-grasp delay finished.");
+    }
+  }
+
+  void handleCloseGripper()
+  {
+    if (!executeGripperNamed(gripper_close_named_target_))
+    {
+      abortSequence("Failed to close gripper.");
+      return;
+    }
+
+    stage_ = Stage::RETURN_TO_OFFSET;
+    RCLCPP_INFO(get_logger(), "Stage -> RETURN_TO_OFFSET");
+  }
+
+  void handleReturnToOffset()
+  {
+    if (!latched_offset_pose_.has_value())
+    {
+      abortSequence("Offset pose missing while returning; resetting.");
+      return;
+    }
+
+    if (atPoseTolerance(*latched_offset_pose_))
+    {
+      stage_ = Stage::RETURN_TO_APPROACH;
+      RCLCPP_INFO(get_logger(), "Already back at offset; Stage -> RETURN_TO_APPROACH");
+      return;
+    }
+
+    if (!planAndExecuteArmPose(*latched_offset_pose_))
+    {
+      abortSequence("Failed to return to offset pose.");
+      return;
+    }
+
+    stage_ = Stage::RETURN_TO_APPROACH;
+    RCLCPP_INFO(get_logger(), "Stage -> RETURN_TO_APPROACH");
+  }
+
+  void handleReturnToApproach()
+  {
+    if (!executeArmNamed(arm_approach_named_target_))
+    {
+      abortSequence("Failed to return to named approach pose.");
+      return;
+    }
+
+    stage_ = Stage::EVALUATE_GRASP;
+    RCLCPP_INFO(get_logger(), "Stage -> EVALUATE_GRASP");
+  }
+
+  void handleMoveHome()
+  {
+    if (!executeArmNamed(arm_home_named_target_))
+    {
+      abortSequence("Failed to reach home pose.");
+      return;
+    }
+
+    RCLCPP_INFO(get_logger(), "Reached home named target '%s'.", arm_home_named_target_.c_str());
+    latest_target_pose_.reset();
+    releaseLatchedTarget();
+    pre_grasp_delay_active_ = false;
+    stage_ = Stage::WAIT_FOR_TARGET;
+    RCLCPP_INFO(get_logger(), "Stage -> WAIT_FOR_TARGET");
+  }
+
+  void handleEvaluateGrasp()
+  {
+    auto joint_pos_opt = getJointPosition(gripper_joint_name_);
+    if (!joint_pos_opt.has_value())
+    {
+      RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock_, 1000,
+                           "Gripper joint '%s' not present in /joint_states yet.",
+                           gripper_joint_name_.c_str());
+      return;
+    }
+
+    const double actual = joint_pos_opt.value();
+    const double planned = planned_gripper_close_position_;
+    const double diff = std::fabs(planned - actual);
+
+    RCLCPP_INFO(get_logger(), "Gripper planned=%.3f, actual=%.3f, diff=%.3f (thr=%.3f)",
+                planned, actual, diff, grasp_detection_threshold_);
+
+    if (diff >= grasp_detection_threshold_)
+    {
+      RCLCPP_INFO(get_logger(), "Object detected in gripper. Moving to '%s'.",
+                  arm_home_named_target_.c_str());
+      pre_grasp_delay_active_ = false;
+      grasp_completed_ = true;
+      stage_ = Stage::MOVE_HOME;
+      RCLCPP_INFO(get_logger(), "Stage -> MOVE_HOME");
+      return;
+    }
+
+    RCLCPP_WARN(get_logger(), "No object detected (diff=%.3f < thr). Re-opening gripper and retrying.", diff);
+
+    if (!executeGripperNamed(gripper_open_named_target_))
+    {
+      abortSequence("Failed to re-open gripper after empty grasp.");
+      return;
+    }
+
+    if (!refreshLatchedTargetIfNew())
+    {
+      abortSequence("Failed to refresh desired pose after returning to approach.");
+      return;
+    }
+
+    pre_grasp_delay_active_ = false;
+    grasp_completed_ = false;
+    stage_ = Stage::MOVE_TO_OFFSET;
+    RCLCPP_INFO(get_logger(), "Stage -> MOVE_TO_OFFSET");
   }
 
 private:
-  // Parameters
-  std::string group_name_;
+  // Parameters / configuration
+  std::string group_arm_name_;
+  std::string group_gripper_name_;
   std::string ee_link_;
   std::string target_frame_;
-  std::string topic_name_;
-  double velocity_scale_{0.4};
-  double accel_scale_{0.4};
-  double plan_time_{0.5};
+  std::string target_topic_;
+  double velocity_scale_{0.2};
+  double accel_scale_{0.2};
+  double plan_time_{0.75};
   int exec_period_ms_{100};
+  std::string arm_approach_named_target_{"approach"};
+  std::string arm_home_named_target_{"zero"};
+  std::string gripper_close_named_target_{"close"};
+  std::string gripper_open_named_target_{"open"};
+  std::string gripper_joint_name_{"joint7"};
+  double pre_grasp_delay_sec_{0.5};
+  double target_timeout_sec_{0.3};
+  double stale_js_sec_{0.5};
+  double grasp_detection_threshold_{0.05};
+  double approach_offset_m_{0.05};
+  double target_stability_hold_sec_{0.25};
+  double target_stability_pos_thr_{0.01};
+  double target_stability_ang_thr_{0.05};
+  double planned_gripper_close_position_{-0.69};
   double pos_thr_m_{0.005};
   double ang_thr_rad_{0.02};
-  double stale_js_sec_{0.5};
-  double target_timeout_sec_{0.3};
-  double approach_offset_m_{0.0};
+
   mutable rclcpp::Clock throttle_clock_{RCL_ROS_TIME};
-  // ROS
+
+  // ROS interfaces
   rclcpp::Subscription<PoseStamped>::SharedPtr pose_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
-  // TF
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
 
   // MoveIt
-  std::unique_ptr<MoveGroupInterface> move_group_;
+  std::unique_ptr<MoveGroupInterface> move_group_arm_;
+  std::unique_ptr<MoveGroupInterface> move_group_gripper_;
   moveit::planning_interface::PlanningSceneInterface planning_scene_;
 
-  // State
+  // State tracking
+  Stage stage_{Stage::WAIT_FOR_TARGET};
+  std::optional<PoseStamped> latest_target_pose_;
+  std::optional<PoseStamped> latched_target_pose_;
+  std::optional<PoseStamped> latched_offset_pose_;
+  std::optional<PoseStamped> stable_reference_pose_;
+  bool target_locked_{false};
+  uint64_t latched_target_seq_{0};
   bool init_done_{false};
   std::atomic<bool> executing_{false};
-  std::optional<PoseStamped> latest_target_pose_;
+  std::atomic<uint64_t> target_pose_seq_{0};
 
   bool have_js_{false};
+  mutable std::mutex joint_mutex_;
+  std::unordered_map<std::string, double> joint_positions_;
   rclcpp::Time last_js_stamp_{0, 0, RCL_ROS_TIME};
   rclcpp::Time exec_completed_js_stamp_{0, 0, RCL_ROS_TIME};
   bool waiting_fresh_after_exec_{false};
+  bool pre_grasp_delay_active_{false};
+  bool grasp_completed_{false};
+  rclcpp::Time pre_grasp_delay_start_{0, 0, RCL_ROS_TIME};
 
   rclcpp::Time last_pose_stamp_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time target_stable_since_{0, 0, RCL_ROS_TIME};
 };
 
-int main(int argc, char** argv)
+int main(int argc, char **argv)
 {
   rclcpp::init(argc, argv);
 
   auto node = std::make_shared<PoseTrackerNode>();
-  node->initialize_move_group(node);
+  node->initialize_move_groups(node);
 
-  // Allow callbacks to run during planning/execution
   rclcpp::executors::MultiThreadedExecutor exec;
   exec.add_node(node);
   exec.spin();

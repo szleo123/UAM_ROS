@@ -2,6 +2,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -142,6 +143,7 @@ private:
       last_pose_stamp_ = now();
     else
       last_pose_stamp_ = rclcpp::Time(msg.header.stamp);
+    target_pose_seq_.fetch_add(1, std::memory_order_relaxed);
   }
 
   void jointStateCallback(const sensor_msgs::msg::JointState &js)
@@ -398,11 +400,21 @@ private:
 
   void handleMoveToGrasp()
   {
+    uint64_t target_seq_snapshot = target_pose_seq_.load(std::memory_order_relaxed);
+    if (hold_after_failed_plan_)
+    {
+      if (target_seq_snapshot == failed_target_pose_seq_)
+        return;
+      hold_after_failed_plan_ = false;
+      target_seq_snapshot = target_pose_seq_.load(std::memory_order_relaxed);
+    }
+
     if (!latestTargetFresh())
     {
       pre_grasp_delay_active_ = false;
       stage_ = Stage::WAIT_FOR_TARGET;
       grasp_completed_ = false;
+      hold_after_failed_plan_ = false;
       return;
     }
 
@@ -412,6 +424,7 @@ private:
       pre_grasp_delay_active_ = false;
       stage_ = Stage::WAIT_FOR_TARGET;
       grasp_completed_ = false;
+      hold_after_failed_plan_ = false;
       return;
     }
 
@@ -438,11 +451,15 @@ private:
     if (!planAndExecuteArmPose(grasp_pose))
     {
       pre_grasp_delay_active_ = false;
-      stage_ = Stage::WAIT_FOR_TARGET;
       grasp_completed_ = false;
+      hold_after_failed_plan_ = true;
+      failed_target_pose_seq_ = target_seq_snapshot;
+      RCLCPP_WARN(get_logger(),
+                  "Planning failed for grasp pose; holding at approach until a new target arrives.");
       return;
     }
 
+    hold_after_failed_plan_ = false;
     pre_grasp_delay_active_ = false;
     stage_ = Stage::PRE_GRASP_DELAY;
     RCLCPP_INFO(get_logger(), "Stage -> PRE_GRASP_DELAY");
@@ -638,6 +655,9 @@ private:
   std::optional<PoseStamped> latest_target_pose_;
   bool init_done_{false};
   std::atomic<bool> executing_{false};
+  std::atomic<uint64_t> target_pose_seq_{0};
+  uint64_t failed_target_pose_seq_{0};
+  bool hold_after_failed_plan_{false};
 
   bool have_js_{false};
   mutable std::mutex joint_mutex_;
