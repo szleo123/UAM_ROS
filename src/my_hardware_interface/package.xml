@@ -23,6 +23,7 @@
   <depend>rclcpp</depend>
   <depend>rclcpp_lifecycle</depend>
   <depend>libserial-dev</depend>
+  <depend>libx11-dev</depend>
 
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>forward_command_controller</exec_depend>

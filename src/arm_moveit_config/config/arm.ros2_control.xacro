@@ -25,6 +25,15 @@
                 <param name="position_scale">1000</param> 
                 <param name="hw_slowdown">10</param>
                 <param name="initial_read_timeout_sec">2.0</param>
+                <param name="enable_feedback_plot">true</param>
+                <param name="feedback_plot_rate_hz">100</param>
+                <param name="feedback_plot_min_rad">-1.</param>
+                <param name="feedback_plot_max_rad">1.</param>
+                <param name="feedback_plot_joint_filter">joint1,joint2,joint3</param>
+                <param name="feedback_plot_csv_enabled">true</param>
+                <param name="feedback_plot_csv_file">/tmp/joint_monitor.csv</param>
+                <param name="feedback_plot_csv_append">false</param>
+
             </hardware>
             <joint name="joint1">
                 <command_interface name="position"/>

@@ -14,13 +14,16 @@
 
 #pragma once
 
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <fstream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
-#include <cstdint>
-#include <limits>
-#include <cmath>
 
 #include <libserial/SerialPort.h>
 #include <libserial/SerialStream.h>
@@ -35,6 +38,12 @@
 #include "rclcpp/macros.hpp"
 #include "rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp"
 #include "rclcpp_lifecycle/state.hpp"
+
+struct _XDisplay;
+struct _XGC;
+using Display = _XDisplay;
+using Window = unsigned long;
+using GC = _XGC *;
 
 namespace my_arm_hardware
 {
@@ -150,6 +159,47 @@ private:
     double t = (u - 60.0) / (1390.0 - 60.0); // 0..1
     return this->grip_ros_min_ + t * (this->grip_ros_max_ - this->grip_ros_min_);
   }
+
+  // Optional realtime feedback UI
+  bool feedback_plot_enabled_{false};
+  double feedback_plot_rate_hz_{5.0};
+  double feedback_plot_min_rad_{-3.14};
+  double feedback_plot_max_rad_{3.14};
+  std::vector<std::string> feedback_plot_joint_filter_;
+  std::vector<size_t> feedback_plot_indices_;
+  rclcpp::Time feedback_plot_last_render_{0, 0, RCL_ROS_TIME};
+  size_t feedback_plot_history_length_{400};
+  int feedback_plot_width_{640};
+  int feedback_plot_height_{240};
+  bool feedback_plot_windows_ready_{false};
+  bool feedback_display_failed_{false};
+  std::vector<std::string> feedback_plot_window_names_;
+  std::vector<std::vector<double>> feedback_plot_history_;
+  std::vector<std::vector<double>> feedback_plot_command_history_;
+  std::vector<double> last_sent_commands_;
+  Display *feedback_display_{nullptr};
+  int feedback_screen_{0};
+  unsigned long feedback_color_bg_{0};
+  unsigned long feedback_color_grid_{0};
+  unsigned long feedback_color_line_{0};
+  unsigned long feedback_color_cmd_line_{0};
+  unsigned long feedback_color_text_{0};
+  std::vector<Window> feedback_windows_;
+  std::vector<GC> feedback_window_gcs_;
+  bool feedback_plot_csv_enabled_{false};
+  bool feedback_plot_csv_append_{false};
+  std::string feedback_plot_csv_path_{"joint_feedback_log.csv"};
+  std::ofstream feedback_plot_csv_stream_;
+  std::mutex feedback_plot_csv_mutex_;
+
+  void update_feedback_plot_selection();
+  void ensure_feedback_plot_storage();
+  void ensure_feedback_windows_created();
+  void maybe_render_feedback_plot();
+  void render_joint_plot(size_t slot, size_t joint_idx);
+  void ensure_feedback_csv_ready();
+  void log_feedback_csv(size_t joint_idx, double stamp_sec, double feedback, double command);
+  void close_feedback_csv();
 };
 
 }  // namespace my_arm_hardware

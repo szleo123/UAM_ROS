@@ -19,6 +19,7 @@ set(THIS_PACKAGE_INCLUDE_DEPENDS
 # find dependencies
 find_package(backward_ros REQUIRED)
 find_package(ament_cmake REQUIRED)
+find_package(X11 REQUIRED)
 foreach(Dependency IN ITEMS ${THIS_PACKAGE_INCLUDE_DEPENDS})
   find_package(${Dependency} REQUIRED)
 endforeach()
@@ -36,10 +37,12 @@ target_include_directories(my_arm_hardware PUBLIC
 $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/hardware/include>
 $<INSTALL_INTERFACE:include/my_arm_hardware>
 ${LIBSERIAL_INCLUDE_DIRS}
+${X11_INCLUDE_DIR}
 )
 
 target_link_libraries(my_arm_hardware PUBLIC
   ${LIBSERIAL_LIBRARIES}
+  ${X11_LIBRARIES}
 )
 
 target_compile_options(my_arm_hardware PRIVATE
@@ -76,5 +79,5 @@ install(TARGETS my_arm_hardware
 
 ## EXPORTS
 ament_export_targets(export_my_arm_hardware HAS_LIBRARY_TARGET)
-ament_export_dependencies(${THIS_PACKAGE_INCLUDE_DEPENDS})
+ament_export_dependencies(${THIS_PACKAGE_INCLUDE_DEPENDS} X11)
 ament_package()

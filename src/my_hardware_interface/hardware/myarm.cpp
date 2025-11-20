@@ -14,9 +14,13 @@
 
 #include "my_arm_hardware/myarm.hpp"
 
-#include <chrono>
 #include <algorithm>
+#include <chrono>
+#include <cctype>
 #include <iomanip>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -25,6 +29,7 @@
 #include "pluginlib/class_list_macros.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include <X11/Xutil.h>
 
 using namespace std::chrono_literals;
 
@@ -100,6 +105,43 @@ static inline bool gripper_try_parse_state(std::vector<uint8_t>& buf, int16_t& c
   // drop consumed prefix
   if (i > 0) buf.erase(buf.begin(), buf.begin()+static_cast<long>(i));
   return false;
+}
+
+static inline std::string trim_copy(const std::string &input)
+{
+  const auto start = input.find_first_not_of(" \t\n\r");
+  if (start == std::string::npos)
+    return "";
+  const auto end = input.find_last_not_of(" \t\n\r");
+  return input.substr(start, end - start + 1);
+}
+
+static inline bool string_to_bool(const std::string &value)
+{
+  std::string lowered;
+  lowered.reserve(value.size());
+  for (char c : value)
+    lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  return lowered == "1" || lowered == "true" || lowered == "on" || lowered == "yes";
+}
+
+static inline std::vector<std::string> split_list(const std::string &csv)
+{
+  std::string sanitized = trim_copy(csv);
+  if (!sanitized.empty() && sanitized.front() == '[')
+    sanitized.erase(sanitized.begin());
+  if (!sanitized.empty() && sanitized.back() == ']')
+    sanitized.pop_back();
+  std::vector<std::string> entries;
+  std::stringstream ss(sanitized);
+  std::string token;
+  while (std::getline(ss, token, ','))
+  {
+    auto trimmed = trim_copy(token);
+    if (!trimmed.empty())
+      entries.push_back(trimmed);
+  }
+  return entries;
 }
 
 namespace my_arm_hardware
@@ -202,9 +244,53 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
   if (info_.hardware_parameters.count("feedback_stale_timeout_sec"))
     feedback_stale_timeout_sec_ = std::stod(info_.hardware_parameters.at("feedback_stale_timeout_sec"));
 
+  if (info_.hardware_parameters.count("enable_feedback_plot"))
+    feedback_plot_enabled_ = string_to_bool(info_.hardware_parameters.at("enable_feedback_plot"));
+
+  if (info_.hardware_parameters.count("feedback_plot_rate_hz"))
+    feedback_plot_rate_hz_ = std::stod(info_.hardware_parameters.at("feedback_plot_rate_hz"));
+  if (feedback_plot_rate_hz_ <= 0.0)
+  {
+    RCLCPP_WARN(get_logger(), "feedback_plot_rate_hz must be > 0. Using default 5 Hz.");
+    feedback_plot_rate_hz_ = 5.0;
+  }
+  
+  if (info_.hardware_parameters.count("feedback_plot_min_rad"))
+    feedback_plot_min_rad_ = std::stod(info_.hardware_parameters.at("feedback_plot_min_rad"));
+  if (info_.hardware_parameters.count("feedback_plot_max_rad"))
+    feedback_plot_max_rad_ = std::stod(info_.hardware_parameters.at("feedback_plot_max_rad"));
+  if (feedback_plot_min_rad_ > feedback_plot_max_rad_)
+    std::swap(feedback_plot_min_rad_, feedback_plot_max_rad_);
+
+  if (info_.hardware_parameters.count("feedback_plot_history_length"))
+  {
+    feedback_plot_history_length_ = static_cast<size_t>(
+      std::max<int64_t>(10, std::stoll(info_.hardware_parameters.at("feedback_plot_history_length"))));
+  }
+  if (info_.hardware_parameters.count("feedback_plot_window_width"))
+  {
+    feedback_plot_width_ = std::max(160, std::stoi(info_.hardware_parameters.at("feedback_plot_window_width")));
+  }
+  if (info_.hardware_parameters.count("feedback_plot_window_height"))
+  {
+    feedback_plot_height_ = std::max(160, std::stoi(info_.hardware_parameters.at("feedback_plot_window_height")));
+  }
+  if (info_.hardware_parameters.count("feedback_plot_joint_filter"))
+    feedback_plot_joint_filter_ = split_list(info_.hardware_parameters.at("feedback_plot_joint_filter"));
+
+  if (info_.hardware_parameters.count("feedback_plot_csv_enabled"))
+    feedback_plot_csv_enabled_ = string_to_bool(info_.hardware_parameters.at("feedback_plot_csv_enabled"));
+
+  if (info_.hardware_parameters.count("feedback_plot_csv_file"))
+    feedback_plot_csv_path_ = info_.hardware_parameters.at("feedback_plot_csv_file");
+
+  if (info_.hardware_parameters.count("feedback_plot_csv_append"))
+    feedback_plot_csv_append_ = string_to_bool(info_.hardware_parameters.at("feedback_plot_csv_append"));
+
   hw_states_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
   hw_commands_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
   hw_velocities_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
+  last_sent_commands_.assign(hw_states_.size(), std::numeric_limits<double>::quiet_NaN());
 
   // Validate joint interfaces (position only)
   for (const hardware_interface::ComponentInfo & joint : info_.joints)
@@ -226,6 +312,17 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
         joint.name.c_str(), hardware_interface::HW_IF_POSITION);
       return hardware_interface::CallbackReturn::ERROR;
     }
+  }
+
+  update_feedback_plot_selection();
+  if (feedback_plot_enabled_)
+  {
+    RCLCPP_INFO(get_logger(),
+                "Realtime joint feedback monitor enabled (%zu joints @ %.1f Hz, range %.2f..%.2f)",
+                feedback_plot_indices_.size(), feedback_plot_rate_hz_,
+                feedback_plot_min_rad_, feedback_plot_max_rad_);
+    if (feedback_plot_csv_enabled_)
+      ensure_feedback_csv_ready();
   }
 
   RCLCPP_INFO(get_logger(),
@@ -366,6 +463,7 @@ hardware_interface::CallbackReturn MyArmHardware::on_activate(
   // Set gripper to open 
   hw_commands_[6] = 0.0;  
   hw_states_[6] = 0.0;
+  last_sent_commands_ = hw_commands_;
 
   return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -539,6 +637,9 @@ hardware_interface::return_type MyArmHardware::read(
           age * 1000.0, feedback_stale_timeout_sec_ * 1000.0);
       }
     }
+
+    if (frame_received)
+      maybe_render_feedback_plot();
   }
 
   if (gripper_ok_) {
@@ -634,7 +735,11 @@ hardware_interface::return_type MyArmHardware::write(
       int16_t data16 = clamp_to_i16(scaled);
       frame[1 + 2 * i] = static_cast<uint8_t>(data16 & 0xFF);         // LSB
       frame[1 + 2 * i + 1] = static_cast<uint8_t>((data16 >> 8) & 0xFF); // MSB
+      if (i < last_sent_commands_.size())
+        last_sent_commands_[i] = static_cast<double>(data16) / pos_scale_;
     }
+    for (size_t i = N; i < last_sent_commands_.size() && i < hw_commands_.size(); ++i)
+      last_sent_commands_[i] = hw_commands_[i];
 
 
     // checksum = sum(header + payload) & 0xFF
@@ -664,10 +769,392 @@ hardware_interface::return_type MyArmHardware::write(
   return hardware_interface::return_type::OK;
 }
 
+void MyArmHardware::update_feedback_plot_selection()
+{
+  if (feedback_plot_windows_ready_)
+  {
+    if (feedback_display_)
+    {
+      for (size_t i = 0; i < feedback_windows_.size(); ++i)
+      {
+        if (feedback_window_gcs_[i])
+          XFreeGC(feedback_display_, feedback_window_gcs_[i]);
+        if (feedback_windows_[i])
+          XDestroyWindow(feedback_display_, feedback_windows_[i]);
+      }
+      XFlush(feedback_display_);
+    }
+    feedback_plot_windows_ready_ = false;
+    feedback_windows_.clear();
+    feedback_window_gcs_.clear();
+    feedback_plot_window_names_.clear();
+  }
+
+  feedback_plot_indices_.clear();
+  const size_t default_count = std::min<size_t>(6, info_.joints.size());
+
+  if (feedback_plot_joint_filter_.empty())
+  {
+    for (size_t i = 0; i < default_count; ++i)
+      feedback_plot_indices_.push_back(i);
+    return;
+  }
+
+  for (const auto &name : feedback_plot_joint_filter_)
+  {
+    auto it = std::find_if(
+      info_.joints.begin(), info_.joints.end(),
+      [&name](const hardware_interface::ComponentInfo &component) { return component.name == name; });
+    if (it == info_.joints.end())
+    {
+      RCLCPP_WARN(get_logger(),
+                  "feedback_plot_joint_filter entry '%s' does not match any joint; ignoring.",
+                  name.c_str());
+      continue;
+    }
+    feedback_plot_indices_.push_back(static_cast<size_t>(std::distance(info_.joints.begin(), it)));
+  }
+
+  if (feedback_plot_indices_.empty())
+  {
+    for (size_t i = 0; i < default_count; ++i)
+      feedback_plot_indices_.push_back(i);
+  }
+
+  feedback_plot_history_.assign(feedback_plot_indices_.size(), std::vector<double>());
+  feedback_plot_command_history_.assign(feedback_plot_indices_.size(), std::vector<double>());
+  feedback_plot_window_names_.clear();
+}
+
+void MyArmHardware::ensure_feedback_plot_storage()
+{
+  if (feedback_plot_history_.size() != feedback_plot_indices_.size())
+    feedback_plot_history_.assign(feedback_plot_indices_.size(), std::vector<double>());
+  if (feedback_plot_command_history_.size() != feedback_plot_indices_.size())
+    feedback_plot_command_history_.assign(feedback_plot_indices_.size(), std::vector<double>());
+}
+
+void MyArmHardware::ensure_feedback_windows_created()
+{
+  if (feedback_plot_windows_ready_ || feedback_display_failed_ || feedback_plot_indices_.empty())
+    return;
+
+  static std::once_flag x11_init_flag;
+  std::call_once(x11_init_flag, []() { XInitThreads(); });
+
+  if (!feedback_display_)
+  {
+    feedback_display_ = XOpenDisplay(nullptr);
+    if (!feedback_display_)
+    {
+      RCLCPP_ERROR(get_logger(), "Failed to open X11 display. Realtime joint plots disabled.");
+      feedback_display_failed_ = true;
+      return;
+    }
+    feedback_screen_ = DefaultScreen(feedback_display_);
+
+    auto alloc_color = [&](int r, int g, int b) -> unsigned long {
+      XColor color;
+      color.red = static_cast<unsigned short>(std::clamp(r, 0, 255) * 257);
+      color.green = static_cast<unsigned short>(std::clamp(g, 0, 255) * 257);
+      color.blue = static_cast<unsigned short>(std::clamp(b, 0, 255) * 257);
+      color.flags = DoRed | DoGreen | DoBlue;
+      if (!XAllocColor(feedback_display_, DefaultColormap(feedback_display_, feedback_screen_), &color))
+        return BlackPixel(feedback_display_, feedback_screen_);
+      return color.pixel;
+    };
+
+    feedback_color_bg_ = alloc_color(16, 16, 16);
+    feedback_color_grid_ = alloc_color(80, 80, 80);
+    feedback_color_line_ = alloc_color(0, 185, 255);
+    feedback_color_cmd_line_ = alloc_color(255, 140, 0);
+    feedback_color_text_ = alloc_color(255, 255, 255);
+  }
+
+  feedback_plot_windows_ready_ = false;
+  feedback_plot_window_names_.clear();
+  feedback_windows_.clear();
+  feedback_window_gcs_.clear();
+
+  const int columns = static_cast<int>(std::ceil(std::sqrt(static_cast<double>(feedback_plot_indices_.size()))));
+  for (size_t slot = 0; slot < feedback_plot_indices_.size(); ++slot)
+  {
+    const size_t idx = feedback_plot_indices_[slot];
+    const int col = (columns <= 0) ? 0 : static_cast<int>(slot % columns);
+    const int row = (columns <= 0) ? 0 : static_cast<int>(slot / columns);
+    const int x = 60 + col * (feedback_plot_width_ + 40);
+    const int y = 60 + row * (feedback_plot_height_ + 80);
+
+    std::string window_name = "Joint feedback - " +
+      ((idx < info_.joints.size()) ? info_.joints[idx].name : ("joint" + std::to_string(idx)));
+
+    Window win = XCreateSimpleWindow(
+      feedback_display_, RootWindow(feedback_display_, feedback_screen_),
+      x, y, static_cast<unsigned int>(feedback_plot_width_),
+      static_cast<unsigned int>(feedback_plot_height_), 0,
+      feedback_color_line_, feedback_color_bg_);
+    XStoreName(feedback_display_, win, window_name.c_str());
+    XSelectInput(feedback_display_, win, ExposureMask | StructureNotifyMask);
+    XMapWindow(feedback_display_, win);
+
+    GC gc = XCreateGC(feedback_display_, win, 0, nullptr);
+    XSetForeground(feedback_display_, gc, feedback_color_line_);
+    XSetBackground(feedback_display_, gc, feedback_color_bg_);
+
+    feedback_windows_.push_back(win);
+    feedback_window_gcs_.push_back(gc);
+    feedback_plot_window_names_.push_back(window_name);
+  }
+
+  XFlush(feedback_display_);
+  feedback_plot_windows_ready_ = !feedback_windows_.empty();
+}
+
+void MyArmHardware::render_joint_plot(size_t slot, size_t joint_idx)
+{
+  if (slot >= feedback_plot_history_.size() ||
+      slot >= feedback_windows_.size() ||
+      slot >= feedback_window_gcs_.size() ||
+      !feedback_display_)
+    return;
+
+  auto &history = feedback_plot_history_[slot];
+  auto &command_history = feedback_plot_command_history_[slot];
+  const double lo = feedback_plot_min_rad_;
+  const double hi = feedback_plot_max_rad_;
+  const double span = std::max(1e-6, hi - lo);
+
+  Window win = feedback_windows_[slot];
+  GC gc = feedback_window_gcs_[slot];
+
+  XSetForeground(feedback_display_, gc, feedback_color_bg_);
+  XFillRectangle(feedback_display_, win, gc, 0, 0,
+                 static_cast<unsigned int>(feedback_plot_width_),
+                 static_cast<unsigned int>(feedback_plot_height_));
+
+  if (lo < 0.0 && hi > 0.0)
+  {
+    const double zero_ratio = (0.0 - lo) / span;
+    const int zero_y = feedback_plot_height_ - 1 -
+      static_cast<int>(zero_ratio * (feedback_plot_height_ - 1));
+    XSetForeground(feedback_display_, gc, feedback_color_grid_);
+    XDrawLine(feedback_display_, win, gc, 0, zero_y,
+              feedback_plot_width_ - 1, zero_y);
+  }
+
+  if (history.size() >= 2)
+  {
+    std::vector<XPoint> points(history.size());
+    for (size_t i = 0; i < history.size(); ++i)
+    {
+      const double x_ratio = static_cast<double>(i) / (history.size() - 1);
+      const int x = static_cast<int>(x_ratio * (feedback_plot_width_ - 1));
+      const double val = std::clamp(history[i], lo, hi);
+      const double y_ratio = (val - lo) / span;
+      const int y = feedback_plot_height_ - 1 -
+        static_cast<int>(y_ratio * (feedback_plot_height_ - 1));
+      points[i].x = static_cast<short>(x);
+      points[i].y = static_cast<short>(y);
+    }
+    XSetForeground(feedback_display_, gc, feedback_color_line_);
+    XDrawLines(feedback_display_, win, gc, points.data(),
+               static_cast<int>(points.size()), CoordModeOrigin);
+  }
+  if (command_history.size() >= 2)
+  {
+    std::vector<XPoint> cmd_points(command_history.size());
+    for (size_t i = 0; i < command_history.size(); ++i)
+    {
+      const double x_ratio = static_cast<double>(i) / (command_history.size() - 1);
+      const int x = static_cast<int>(x_ratio * (feedback_plot_width_ - 1));
+      const double val = std::clamp(command_history[i], lo, hi);
+      const double y_ratio = (val - lo) / span;
+      const int y = feedback_plot_height_ - 1 -
+        static_cast<int>(y_ratio * (feedback_plot_height_ - 1));
+      cmd_points[i].x = static_cast<short>(x);
+      cmd_points[i].y = static_cast<short>(y);
+    }
+    XSetForeground(feedback_display_, gc, feedback_color_cmd_line_);
+    XDrawLines(feedback_display_, win, gc, cmd_points.data(),
+               static_cast<int>(cmd_points.size()), CoordModeOrigin);
+  }
+  else
+  {
+    const char *msg = "Waiting for samples...";
+    XSetForeground(feedback_display_, gc, feedback_color_text_);
+    XDrawString(feedback_display_, win, gc, 20, feedback_plot_height_ / 2, msg,
+                static_cast<int>(std::strlen(msg)));
+  }
+
+  XSetForeground(feedback_display_, gc, feedback_color_text_);
+  char label[128];
+  const std::string joint_name =
+    (joint_idx < info_.joints.size()) ? info_.joints[joint_idx].name
+                                      : ("joint" + std::to_string(joint_idx));
+  const double cmd_display =
+    (joint_idx < last_sent_commands_.size()) ? last_sent_commands_[joint_idx]
+                                             : ((joint_idx < hw_commands_.size())
+                                                  ? hw_commands_[joint_idx]
+                                                  : hw_states_[joint_idx]);
+  const double fb_display = (joint_idx < hw_states_.size()) ? hw_states_[joint_idx] : 0.0;
+  std::snprintf(label, sizeof(label), "%s fb=%.3f rad cmd=%.3f rad",
+                joint_name.c_str(), fb_display, cmd_display);
+  XDrawString(feedback_display_, win, gc, 10, 20,
+              label, static_cast<int>(std::strlen(label)));
+}
+
+void MyArmHardware::ensure_feedback_csv_ready()
+{
+  if (!feedback_plot_csv_enabled_)
+    return;
+
+  std::lock_guard<std::mutex> lock(feedback_plot_csv_mutex_);
+  if (feedback_plot_csv_stream_.is_open())
+    return;
+
+  bool file_has_data = false;
+  if (feedback_plot_csv_append_)
+  {
+    std::ifstream existing(feedback_plot_csv_path_, std::ios::binary | std::ios::ate);
+    file_has_data = existing && existing.tellg() > 0;
+  }
+
+  std::ios_base::openmode mode = std::ios::out;
+  mode |= feedback_plot_csv_append_ ? std::ios::app : std::ios::trunc;
+  feedback_plot_csv_stream_.open(feedback_plot_csv_path_, mode);
+  if (!feedback_plot_csv_stream_)
+  {
+    RCLCPP_ERROR(get_logger(), "Failed to open feedback CSV file '%s'. Disabling CSV logging.",
+                 feedback_plot_csv_path_.c_str());
+    feedback_plot_csv_enabled_ = false;
+    return;
+  }
+
+  if (!file_has_data)
+  {
+    feedback_plot_csv_stream_ << "timestamp_sec,joint_name,feedback_rad,command_rad\n";
+    feedback_plot_csv_stream_.flush();
+  }
+}
+
+void MyArmHardware::log_feedback_csv(size_t joint_idx, double stamp_sec, double feedback, double command)
+{
+  if (!feedback_plot_csv_enabled_)
+    return;
+
+  std::lock_guard<std::mutex> lock(feedback_plot_csv_mutex_);
+  if (!feedback_plot_csv_stream_.is_open())
+    return;
+
+  std::string joint_name =
+    (joint_idx < info_.joints.size()) ? info_.joints[joint_idx].name
+                                      : ("joint" + std::to_string(joint_idx));
+
+  feedback_plot_csv_stream_ << std::fixed << std::setprecision(6)
+                            << stamp_sec << ","
+                            << joint_name << ","
+                            << feedback << ","
+                            << command << "\n";
+  feedback_plot_csv_stream_.flush();
+}
+
+void MyArmHardware::close_feedback_csv()
+{
+  std::lock_guard<std::mutex> lock(feedback_plot_csv_mutex_);
+  if (feedback_plot_csv_stream_.is_open())
+    feedback_plot_csv_stream_.close();
+}
+
+void MyArmHardware::maybe_render_feedback_plot()
+{
+  if (!feedback_plot_enabled_ || feedback_plot_indices_.empty() || feedback_display_failed_)
+    return;
+
+  const double min_interval = 1.0 / feedback_plot_rate_hz_;
+  const auto now = get_clock()->now();
+  if (feedback_plot_last_render_.nanoseconds() != 0)
+  {
+    const double elapsed = (now - feedback_plot_last_render_).seconds();
+    if (elapsed < min_interval)
+      return;
+  }
+  feedback_plot_last_render_ = now;
+  const double stamp_sec = now.seconds();
+
+  ensure_feedback_plot_storage();
+  ensure_feedback_windows_created();
+  if (!feedback_plot_windows_ready_)
+    return;
+
+  if (feedback_plot_csv_enabled_)
+    ensure_feedback_csv_ready();
+
+  const size_t max_len = std::max<size_t>(10, feedback_plot_history_length_);
+  for (size_t slot = 0; slot < feedback_plot_indices_.size(); ++slot)
+  {
+    size_t joint_idx = feedback_plot_indices_[slot];
+    if (joint_idx >= hw_states_.size())
+      continue;
+    const double pos = hw_states_[joint_idx];
+    if (!std::isfinite(pos))
+      continue;
+
+    auto &history = feedback_plot_history_[slot];
+    history.push_back(pos);
+    if (history.size() > max_len)
+    {
+      const auto remove_count =
+        static_cast<std::vector<double>::difference_type>(history.size() - max_len);
+      history.erase(history.begin(), history.begin() + remove_count);
+    }
+
+    double cmd = pos;
+    if (joint_idx < last_sent_commands_.size() && std::isfinite(last_sent_commands_[joint_idx]))
+      cmd = last_sent_commands_[joint_idx];
+    else if (joint_idx < hw_commands_.size() && std::isfinite(hw_commands_[joint_idx]))
+      cmd = hw_commands_[joint_idx];
+    auto &cmd_history = feedback_plot_command_history_[slot];
+    cmd_history.push_back(cmd);
+    if (cmd_history.size() > max_len)
+    {
+      const auto remove_count =
+        static_cast<std::vector<double>::difference_type>(cmd_history.size() - max_len);
+      cmd_history.erase(cmd_history.begin(), cmd_history.begin() + remove_count);
+    }
+
+    render_joint_plot(slot, joint_idx);
+    log_feedback_csv(joint_idx, stamp_sec, pos, cmd);
+  }
+
+  if (feedback_display_)
+    XFlush(feedback_display_);
+}
+
 hardware_interface::CallbackReturn
 MyArmHardware::on_cleanup(const rclcpp_lifecycle::State & /*previous_state*/)
 {
   RCLCPP_INFO(get_logger(), "Cleaning up (de-configure) ...");
+
+  if (feedback_plot_windows_ready_ || feedback_display_)
+  {
+    if (feedback_display_)
+    {
+      for (GC gc : feedback_window_gcs_)
+        XFreeGC(feedback_display_, gc);
+      for (Window win : feedback_windows_)
+        XDestroyWindow(feedback_display_, win);
+      XFlush(feedback_display_);
+      XCloseDisplay(feedback_display_);
+    }
+    feedback_display_ = nullptr;
+    feedback_windows_.clear();
+    feedback_window_gcs_.clear();
+    feedback_plot_window_names_.clear();
+    feedback_plot_history_.clear();
+    feedback_plot_windows_ready_ = false;
+    feedback_display_failed_ = false;
+  }
+  close_feedback_csv();
 
   // Close writer port
   try {
