@@ -1,7 +1,7 @@
-from moveit_configs_utils import MoveItConfigsBuilder
 from moveit_configs_utils.launches import generate_moveit_rviz_launch
 
+from arm_moveit_config_utils.launch_utils import build_moveit_config
 
 def generate_launch_description():
-    moveit_config = MoveItConfigsBuilder("arm", package_name="arm_moveit_config").to_moveit_configs()
+    moveit_config = build_moveit_config()
     return generate_moveit_rviz_launch(moveit_config)

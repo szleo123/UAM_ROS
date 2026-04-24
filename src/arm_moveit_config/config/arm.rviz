@@ -69,13 +69,13 @@ Visualization Manager:
           Value: true
           Show Axes: true
           Alpha: 1
-        link1: {Value: true}
-        link2: {Value: true}
-        link3: {Value: true}
-        link4: {Value: true}
-        link5: {Value: true}
-        link6: {Value: true}
-        link7: {Value: true}
+        link_1: {Value: true}
+        link_2: {Value: true}
+        link_3: {Value: true}
+        link_4: {Value: true}
+        link_5: {Value: true}
+        link_6: {Value: true}
+        tool_link: {Value: true}
         tool0:
           Value: true
           Show Axes: true

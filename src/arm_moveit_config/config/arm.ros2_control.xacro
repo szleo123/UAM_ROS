@@ -1,104 +1,97 @@
 <?xml version="1.0"?>
 
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
-    <xacro:arg name="hw_plugin" default="my_arm_hardware/MyArmSystem"/>
-    <!-- <plugin>mock_components/GenericSystem</plugin> -->
-    <xacro:arg name="serial_port" default="/dev/ttyUSB0"/>
-    <xacro:arg name="baudrate" default="115200"/>
+    <xacro:arg name="use_fake_hardware" default="true"/>
+    <xacro:arg name="serial_port" default="/dev/ttyUSB4"/>
+    <xacro:arg name="reader_port" default="/dev/ttyUSB5"/>
+    <xacro:arg name="gripper_port" default="/dev/ttyUSB6"/>
+    <xacro:arg name="baudrate" default="230400"/>
+    <xacro:arg name="gripper_baudrate" default="115200"/>
+    <xacro:arg name="position_scale" default="1000"/>
+    <xacro:arg name="hw_slowdown" default="10"/>
+    <xacro:arg name="initial_read_timeout_sec" default="2.0"/>
+    <xacro:arg name="aux_joint_min" default="-3.14"/>
+    <xacro:arg name="aux_joint_max" default="3.14"/>
+    <xacro:arg name="enable_feedback_plot" default="false"/>
+    <xacro:arg name="feedback_plot_rate_hz" default="100"/>
+    <xacro:arg name="feedback_plot_min_rad" default="-1.0"/>
+    <xacro:arg name="feedback_plot_max_rad" default="1.0"/>
+    <xacro:arg name="feedback_plot_joint_filter" default="joint_1,joint_2,joint_3"/>
+    <xacro:arg name="feedback_plot_csv_enabled" default="false"/>
+    <xacro:arg name="feedback_plot_csv_file" default="/tmp/joint_monitor.csv"/>
+    <xacro:arg name="feedback_plot_csv_append" default="false"/>
 
+    <xacro:macro name="position_joint_interfaces" params="joint_name initial_value min_limit max_limit">
+        <joint name="${joint_name}">
+            <command_interface name="position"/>
+            <param name="min">${min_limit}</param>
+            <param name="max">${max_limit}</param>
+            <state_interface name="position">
+                <param name="initial_value">${initial_value}</param>
+            </state_interface>
+            <state_interface name="velocity"/>
+        </joint>
+    </xacro:macro>
 
-    <xacro:macro name="arm_ros2_control" params="name initial_positions_file">
+    <xacro:macro name="arm_ros2_control" params="
+        name
+        initial_positions_file
+        use_fake_hardware:=true
+        serial_port:='/dev/ttyUSB4'
+        reader_port:='/dev/ttyUSB5'
+        gripper_port:='/dev/ttyUSB6'
+        baudrate:='230400'
+        gripper_baudrate:='115200'
+        position_scale:='1000'
+        hw_slowdown:='10'
+        initial_read_timeout_sec:='2.0'
+        aux_joint_min:='-3.14'
+        aux_joint_max:='3.14'
+        enable_feedback_plot:='false'
+        feedback_plot_rate_hz:='100'
+        feedback_plot_min_rad:='-1.0'
+        feedback_plot_max_rad:='1.0'
+        feedback_plot_joint_filter:='joint_1,joint_2,joint_3'
+        feedback_plot_csv_enabled:='false'
+        feedback_plot_csv_file:='/tmp/joint_monitor.csv'
+        feedback_plot_csv_append:='false'">
         <xacro:property name="initial_positions" value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
 
-        <!-- <xacro:arg name="hw_plugin" default="mock_components/GenericSystem"/> -->
         <ros2_control name="${name}" type="system">
             <hardware>
-                <!-- By default, set up controllers for simulation. This won't work on real hardware -->
-                <!-- <plugin>mock_components/GenericSystem</plugin> -->
-                
-                <plugin>my_arm_hardware/MyArmHardware</plugin>
-                <param name="serial_port">/dev/ttyUSB4</param>
-                <param name="reader_port">/dev/ttyUSB5</param>
-                <param name="gripper_port">/dev/ttyUSB6</param>
-                <param name="baudrate">230400</param>
-                <param name="gripper_baudrate">115200</param>
-                <param name="position_scale">1000</param> 
-                <param name="hw_slowdown">10</param>
-                <param name="initial_read_timeout_sec">2.0</param>
-                <param name="enable_feedback_plot">true</param>
-                <param name="feedback_plot_rate_hz">100</param>
-                <param name="feedback_plot_min_rad">-1.</param>
-                <param name="feedback_plot_max_rad">1.</param>
-                <param name="feedback_plot_joint_filter">joint1,joint2,joint3</param>
-                <param name="feedback_plot_csv_enabled">true</param>
-                <param name="feedback_plot_csv_file">/tmp/joint_monitor.csv</param>
-                <param name="feedback_plot_csv_append">false</param>
-
+                <xacro:if value="${use_fake_hardware}">
+                    <plugin>mock_components/GenericSystem</plugin>
+                </xacro:if>
+                <xacro:unless value="${use_fake_hardware}">
+                    <plugin>my_arm_hardware/MyArmHardware</plugin>
+                    <param name="serial_port">${serial_port}</param>
+                    <param name="reader_port">${reader_port}</param>
+                    <param name="gripper_port">${gripper_port}</param>
+                    <param name="baudrate">${baudrate}</param>
+                    <param name="gripper_baudrate">${gripper_baudrate}</param>
+                    <param name="position_scale">${position_scale}</param>
+                    <param name="hw_slowdown">${hw_slowdown}</param>
+                    <param name="initial_read_timeout_sec">${initial_read_timeout_sec}</param>
+                    <param name="aux_joint_min">${aux_joint_min}</param>
+                    <param name="aux_joint_max">${aux_joint_max}</param>
+                    <param name="enable_feedback_plot">${enable_feedback_plot}</param>
+                    <param name="feedback_plot_rate_hz">${feedback_plot_rate_hz}</param>
+                    <param name="feedback_plot_min_rad">${feedback_plot_min_rad}</param>
+                    <param name="feedback_plot_max_rad">${feedback_plot_max_rad}</param>
+                    <param name="feedback_plot_joint_filter">${feedback_plot_joint_filter}</param>
+                    <param name="feedback_plot_csv_enabled">${feedback_plot_csv_enabled}</param>
+                    <param name="feedback_plot_csv_file">${feedback_plot_csv_file}</param>
+                    <param name="feedback_plot_csv_append">${feedback_plot_csv_append}</param>
+                </xacro:unless>
             </hardware>
-            <joint name="joint1">
-                <command_interface name="position"/>
-                  <param name="min"> -1.57</param>
-                  <param name="max"> 1.57</param>
-                <state_interface name="position">
-                  <param name="initial_value">${initial_positions['joint1']}</param>
-                </state_interface>
-                <state_interface name="velocity"/>
-            </joint>
-            <joint name="joint2">
-                <command_interface name="position"/>
-                  <param name="min"> 0.00</param>
-                  <param name="max"> 3.14</param>
-                <state_interface name="position">
-                  <param name="initial_value">${initial_positions['joint2']}</param>
-                </state_interface>
-                <state_interface name="velocity"/>
-            </joint>
-            <joint name="joint3">
-                <command_interface name="position"/>
-                  <param name="min"> -3.14 </param>
-                  <param name="max"> 0.00</param>
-                <state_interface name="position">
-                  <param name="initial_value">${initial_positions['joint3']}</param>
-                </state_interface>
-                <state_interface name="velocity"/>
-            </joint>
-            <joint name="joint4">
-                <command_interface name="position"/>
-                  <param name="min"> -3.14 </param>
-                  <param name="max"> 3.14</param>
-                <state_interface name="position">
-                  <param name="initial_value">${initial_positions['joint4']}</param>
-                </state_interface>
-                <state_interface name="velocity"/>
-            </joint>
-            <joint name="joint5">
-                <command_interface name="position"/>
-                  <param name="min"> 0 </param>
-                  <param name="max"> 3.14</param>
-                <state_interface name="position">
-                  <param name="initial_value">${initial_positions['joint5']}</param>
-                </state_interface>
-                <state_interface name="velocity"/>
-            </joint>
-            <joint name="joint6">
-                <command_interface name="position"/>
-                  <param name="min"> -3.14 </param>
-                  <param name="max"> 3.14</param>
-                <state_interface name="position">
-                  <param name="initial_value">${initial_positions['joint6']}</param>
-                </state_interface>
-                <state_interface name="velocity"/>
-            </joint>
-            <joint name="joint7">
-                <command_interface name="position"/>
-                  <param name="min"> -0.69 </param>
-                  <param name="max"> 0.00</param>
-                <state_interface name="position">
-                  <param name="initial_value">${initial_positions['joint7']}</param>
-                </state_interface>
-                <state_interface name="velocity"/>
-            </joint>
 
+            <xacro:position_joint_interfaces joint_name="joint_1" initial_value="${initial_positions['joint_1']}" min_limit="-3.14" max_limit="3.14"/>
+            <xacro:position_joint_interfaces joint_name="joint_2" initial_value="${initial_positions['joint_2']}" min_limit="-3.14" max_limit="3.14"/>
+            <xacro:position_joint_interfaces joint_name="joint_3" initial_value="${initial_positions['joint_3']}" min_limit="-3.14" max_limit="3.14"/>
+            <xacro:position_joint_interfaces joint_name="joint_4" initial_value="${initial_positions['joint_4']}" min_limit="-3.14" max_limit="3.14"/>
+            <xacro:position_joint_interfaces joint_name="joint_5" initial_value="${initial_positions['joint_5']}" min_limit="-3.14" max_limit="3.14"/>
+            <xacro:position_joint_interfaces joint_name="joint_6" initial_value="${initial_positions['joint_6']}" min_limit="-3.14" max_limit="3.14"/>
+            <xacro:position_joint_interfaces joint_name="tool_joint" initial_value="${initial_positions['tool_joint']}" min_limit="${aux_joint_min}" max_limit="${aux_joint_max}"/>
         </ros2_control>
     </xacro:macro>
 </robot>

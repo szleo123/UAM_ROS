@@ -17,10 +17,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
-#include <iomanip>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -29,9 +29,55 @@
 #include "pluginlib/class_list_macros.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/empty.hpp"
+#include "std_msgs/msg/string.hpp"
+#include "std_msgs/msg/u_int8.hpp"
+#include "std_srvs/srv/trigger.hpp"
 #include <X11/Xutil.h>
 
 using namespace std::chrono_literals;
+
+namespace
+{
+constexpr size_t kArmFeedbackJointCount = 6;
+constexpr uint8_t kArmFeedbackHeader = 0xAA;
+constexpr uint8_t kArmCommandHeader = 0xFF;
+constexpr uint8_t kSystemCommandHeader = 0xEE;
+constexpr size_t kSystemFrameLength = 14;
+constexpr uint8_t kEventDamiaoReady = 0x01;
+constexpr uint8_t kEventAllReady = 0x02;
+constexpr uint8_t kCmdReachedDropPose = 0x01;
+constexpr uint8_t kCmdStartDamiaoInit = 0x10;
+constexpr size_t kArmFrameLength = 14;
+constexpr double kMinPeriodSec = 1e-6;
+constexpr double kGripperUnitsMin = 60.0;
+constexpr double kGripperUnitsMax = 1390.0;
+constexpr const char * kHomingStatusTopic = "/arm_homing/status_text";
+constexpr const char * kHomingStateTopic = "/arm_homing/state";
+constexpr const char * kHomingInitService = "/arm_homing/start_initialization";
+constexpr const char * kHomingInitTopic = "/arm_homing/start_initialization";
+constexpr const char * kHomingConfirmService = "/arm_homing/confirm_drop_pose";
+constexpr const char * kHomingConfirmTopic = "/arm_homing/reached_drop_pose";
+
+double safe_period_seconds(const rclcpp::Duration & period)
+{
+  return std::max(period.seconds(), kMinPeriodSec);
+}
+
+template <typename VectorT>
+void reset_vector(VectorT & values, double value)
+{
+  std::fill(values.begin(), values.end(), value);
+}
+
+uint8_t frame_checksum(const std::vector<uint8_t> & frame)
+{
+  uint32_t sum = 0;
+  for (size_t i = 0; i + 1 < frame.size(); ++i)
+    sum += frame[i];
+  return static_cast<uint8_t>(sum & 0xFF);
+}
+}  // namespace
 
 static LibSerial::BaudRate baud_from_uint(unsigned int b)
 {
@@ -58,6 +104,33 @@ static LibSerial::BaudRate baud_from_uint(unsigned int b)
     default: throw std::invalid_argument("Unsupported baudrate: " + std::to_string(b));
   }
 }
+
+namespace
+{
+void open_serial_port(
+  LibSerial::SerialPort & port,
+  const std::string & path,
+  unsigned int baudrate)
+{
+  if (port.IsOpen())
+    port.Close();
+
+  port.Open(path);
+  port.SetBaudRate(baud_from_uint(baudrate));
+  port.SetCharacterSize(LibSerial::CharacterSize::CHAR_SIZE_8);
+  port.SetFlowControl(LibSerial::FlowControl::FLOW_CONTROL_NONE);
+  port.SetParity(LibSerial::Parity::PARITY_NONE);
+  port.SetStopBits(LibSerial::StopBits::STOP_BITS_1);
+}
+
+void close_serial_port(LibSerial::SerialPort & port)
+{
+  if (!port.IsOpen())
+    return;
+  port.FlushIOBuffers();
+  port.Close();
+}
+}  // namespace
 
 static inline uint8_t gripper_checksum(const std::vector<uint8_t>& f, size_t start=2) {
   uint32_t s = 0; for (size_t i = start; i < f.size(); ++i) s += f[i];
@@ -107,6 +180,15 @@ static inline bool gripper_try_parse_state(std::vector<uint8_t>& buf, int16_t& c
   return false;
 }
 
+static inline std::vector<uint8_t> pack_system_command(uint8_t command_code)
+{
+  std::vector<uint8_t> frame(kSystemFrameLength, 0);
+  frame[0] = kSystemCommandHeader;
+  frame[1] = command_code;
+  frame.back() = frame_checksum(frame);
+  return frame;
+}
+
 static inline std::string trim_copy(const std::string &input)
 {
   const auto start = input.find_first_not_of(" \t\n\r");
@@ -148,10 +230,6 @@ namespace my_arm_hardware
 {
 bool MyArmHardware::wait_for_initial_feedback(std::array<double,6>& q, double timeout_sec)
 {
-  constexpr uint8_t HEADER = 0xAA;
-  constexpr size_t FRAME_LEN = 14;
-  constexpr size_t N = 6;
-
   rclcpp::Time t0 = get_clock()->now();
   std::vector<uint8_t> buf_local; buf_local.reserve(128);
 
@@ -172,29 +250,41 @@ bool MyArmHardware::wait_for_initial_feedback(std::array<double,6>& q, double ti
 
     // scan for frames
     size_t i = 0;
-    while (buf_local.size() - i >= FRAME_LEN)
+    while (buf_local.size() - i >= kSystemFrameLength)
     {
-      if (buf_local[i] != HEADER) { ++i; continue; }
-      if (buf_local.size() - i < FRAME_LEN) break;
+      const uint8_t header = buf_local[i];
+      if (header != kArmFeedbackHeader && header != kSystemCommandHeader) {
+        ++i;
+        continue;
+      }
+      if (buf_local.size() - i < kSystemFrameLength) break;
 
       uint32_t sum = 0;
-      for (size_t k = 0; k < FRAME_LEN - 1; ++k) sum += buf_local[i + k];
+      for (size_t k = 0; k < kSystemFrameLength - 1; ++k) sum += buf_local[i + k];
       uint8_t cs = static_cast<uint8_t>(sum & 0xFF);
-      uint8_t rxcs = buf_local[i + FRAME_LEN - 1];
+      uint8_t rxcs = buf_local[i + kSystemFrameLength - 1];
 
-      if (cs == rxcs)
-      {
-        // decode 6 int16 LE -> double
-        for (size_t j = 0; j < N; ++j)
-        {
-          uint8_t lo = buf_local[i + 1 + 2*j];
-          uint8_t hi = buf_local[i + 1 + 2*j + 1];
-          int16_t raw = static_cast<int16_t>((static_cast<uint16_t>(hi) << 8) | lo);
-          q[j] = static_cast<double>(raw) / pos_scale_;
-        }
-        return true;
+      if (cs != rxcs) {
+        ++i;
+        continue;
       }
-      ++i; // bad checksum: slide window
+
+      if (header == kSystemCommandHeader)
+      {
+        handle_system_event(buf_local[i + 1]);
+        i += kSystemFrameLength;
+        continue;
+      }
+
+      // decode 6 int16 LE -> double
+      for (size_t j = 0; j < kArmFeedbackJointCount; ++j)
+      {
+        uint8_t lo = buf_local[i + 1 + 2*j];
+        uint8_t hi = buf_local[i + 1 + 2*j + 1];
+        int16_t raw = static_cast<int16_t>((static_cast<uint16_t>(hi) << 8) | lo);
+        q[j] = static_cast<double>(raw) / pos_scale_;
+      }
+      return true;
     }
 
     // brief sleep to avoid busy spin
@@ -243,6 +333,10 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
     initial_read_timeout_sec_ = std::stod(info_.hardware_parameters.at("initial_read_timeout_sec"));
   if (info_.hardware_parameters.count("feedback_stale_timeout_sec"))
     feedback_stale_timeout_sec_ = std::stod(info_.hardware_parameters.at("feedback_stale_timeout_sec"));
+  if (info_.hardware_parameters.count("aux_joint_min"))
+    aux_joint_min_ = std::stod(info_.hardware_parameters.at("aux_joint_min"));
+  if (info_.hardware_parameters.count("aux_joint_max"))
+    aux_joint_max_ = std::stod(info_.hardware_parameters.at("aux_joint_max"));
 
   if (info_.hardware_parameters.count("enable_feedback_plot"))
     feedback_plot_enabled_ = string_to_bool(info_.hardware_parameters.at("enable_feedback_plot"));
@@ -328,6 +422,7 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
   RCLCPP_INFO(get_logger(),
               "Initialized MyArmSystem with %i joints, writer_port=%s, reader_port=%s, baud=%u, scale=%.1f, slowdown=%.1f",
               static_cast<int>(info_.joints.size()), serial_port_path_.c_str(), reader_port_path_.c_str(), baudrate_, pos_scale_, hw_slowdown_);
+  setup_homing_interface();
 
   return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -339,22 +434,10 @@ hardware_interface::CallbackReturn MyArmHardware::on_configure(
   try 
   {
     std::scoped_lock lk(serial_mtx_);
-
-    if (serial_.IsOpen())
-      serial_.Close();
-
-    serial_.Open(serial_port_path_);
-    serial_.SetBaudRate(baud_from_uint(baudrate_));
-    serial_.SetCharacterSize(LibSerial::CharacterSize::CHAR_SIZE_8);
-    serial_.SetFlowControl(LibSerial::FlowControl::FLOW_CONTROL_NONE);
-    serial_.SetParity(LibSerial::Parity::PARITY_NONE);
-    serial_.SetStopBits(LibSerial::StopBits::STOP_BITS_1);
-
+    open_serial_port(serial_, serial_port_path_, baudrate_);
     serial_ok_ = true;
     RCLCPP_INFO(get_logger(), "Serial port %s opened at %u baud", 
                 serial_port_path_.c_str(), baudrate_);
-
-    
   }
   catch (const std::exception & e)
   {
@@ -366,16 +449,7 @@ hardware_interface::CallbackReturn MyArmHardware::on_configure(
   try
   {
     std::scoped_lock rk(reader_mtx_);
-    if (reader_.IsOpen())
-      reader_.Close();
-
-    reader_.Open(reader_port_path_);
-    reader_.SetBaudRate(baud_from_uint(baudrate_));
-    reader_.SetCharacterSize(LibSerial::CharacterSize::CHAR_SIZE_8);
-    reader_.SetFlowControl(LibSerial::FlowControl::FLOW_CONTROL_NONE);
-    reader_.SetParity(LibSerial::Parity::PARITY_NONE);
-    reader_.SetStopBits(LibSerial::StopBits::STOP_BITS_1);
-
+    open_serial_port(reader_, reader_port_path_, baudrate_);
     reader_ok_ = true;
     RCLCPP_INFO(get_logger(), "Reader port %s opened at %u baud", 
                 reader_port_path_.c_str(), baudrate_);
@@ -390,24 +464,12 @@ hardware_interface::CallbackReturn MyArmHardware::on_configure(
   try 
   {
     std::scoped_lock gk(gripper_mtx_);
-
-    if (gripper_.IsOpen())
-      gripper_.Close();
-
-    gripper_.Open(gripper_port_path_);
-    gripper_.SetBaudRate(baud_from_uint(gripper_baudrate_));
-    gripper_.SetCharacterSize(LibSerial::CharacterSize::CHAR_SIZE_8);
-    gripper_.SetFlowControl(LibSerial::FlowControl::FLOW_CONTROL_NONE);
-    gripper_.SetParity(LibSerial::Parity::PARITY_NONE);
-    gripper_.SetStopBits(LibSerial::StopBits::STOP_BITS_1);
-
+    open_serial_port(gripper_, gripper_port_path_, gripper_baudrate_);
     gripper_ok_ = true;
     gripper_.FlushIOBuffers();
     gripper_rx_.clear();
     RCLCPP_INFO(get_logger(), "Gripper port %s opened at %u baud", 
                 gripper_port_path_.c_str(), gripper_baudrate_);
-
-    
   }
   catch (const std::exception & e)
   {
@@ -416,13 +478,12 @@ hardware_interface::CallbackReturn MyArmHardware::on_configure(
     gripper_ok_ = false;
   }
 
-  // Reset states/commands 
-  for (size_t i = 0; i < hw_states_.size(); i++)
-  {
-    hw_states_[i] = 0.0;
-    hw_commands_[i] = 0.0;
-    hw_velocities_[i] = 0.0;
-  }
+  reset_joint_buffers(0.0);
+  rx_buffer_.clear();
+  publish_homing_state(
+    RosMasterHomingState::WAITING_INIT_COMMAND,
+    "Waiting for operator initialization command. Click Initialize Damiao or call "
+    "/arm_homing/start_initialization before enabling the Damiao motors.");
 
   RCLCPP_INFO(get_logger(), "Successfully configured!");
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -451,18 +512,12 @@ hardware_interface::CallbackReturn MyArmHardware::on_activate(
   {
     // No feedback—**do not** send commands yet. Controller can start, but write() is gated.
     initial_positions_received_ = false;
-    for (size_t i = 0; i < hw_states_.size(); ++i) {
-      // keep whatever you had (0 or previous), but align commands to states to avoid jumps
-      hw_commands_[i] = hw_states_[i];
-    }
+    sync_commands_to_states();
     RCLCPP_ERROR(get_logger(),
       "Initial feedback NOT received within %.2fs. write() will be skipped until feedback arrives.",
       initial_read_timeout_sec_);
   }
 
-  // Set gripper to open 
-  hw_commands_[6] = 0.0;  
-  hw_states_[6] = 0.0;
   last_sent_commands_ = hw_commands_;
 
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -474,10 +529,7 @@ hardware_interface::CallbackReturn MyArmHardware::on_deactivate(
   RCLCPP_INFO(get_logger(), "Deactivating ...please wait...");
 
   // Freeze commands at current positions
-  for (size_t i = 0; i < hw_states_.size(); i++)
-  {
-    hw_commands_[i] = hw_states_[i];
-  }
+  sync_commands_to_states();
   RCLCPP_INFO(get_logger(), "Successfully deactivated!");
 
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -522,7 +574,7 @@ hardware_interface::return_type MyArmHardware::read(
 
   if (!reader_ok_ && !gripper_ok_)
   {
-     const double dt = period.seconds();
+    const double dt = safe_period_seconds(period);
     for (size_t i = 0; i < hw_states_.size(); ++i)
     {
       double prev = hw_states_[i];
@@ -554,68 +606,74 @@ hardware_interface::return_type MyArmHardware::read(
       return hardware_interface::return_type::OK;
     }
     // 2 Parse frames: 0xAA + 12 data bytes + checksum
-    constexpr uint8_t HEADER = 0xAA;
-    constexpr size_t FRAME_LEN = 14; 
-    constexpr size_t N = 6; // number of joints expected
-
     size_t i = 0; 
     bool frame_received = false;
-    while (rx_buffer_.size() - i >= FRAME_LEN) {
-      // Find header 
-      if (rx_buffer_[i] != HEADER) {
+    const double dt = safe_period_seconds(period);
+    while (rx_buffer_.size() - i >= kSystemFrameLength) {
+      const uint8_t header = rx_buffer_[i];
+      if (header != kArmFeedbackHeader && header != kSystemCommandHeader) {
         i++;
         continue;
       }
 
-      // We have a candidate header at i; ensure we have full frame 
-      if (rx_buffer_.size() - i < FRAME_LEN) {
+      if (rx_buffer_.size() - i < kSystemFrameLength) {
         break; // wait for more data
       }
 
-      // Compute checksum over bytes [i .. i+12]
       uint32_t sum = 0; 
-      for (size_t k = 0; k < FRAME_LEN -1; k++) {
+      for (size_t k = 0; k < kSystemFrameLength - 1; k++) {
         sum += rx_buffer_[i + k];
       }
       uint8_t checksum = static_cast<uint8_t>(sum & 0xFF);
-      uint8_t rx_checksum = rx_buffer_[i + FRAME_LEN -1];
+      uint8_t rx_checksum = rx_buffer_[i + kSystemFrameLength - 1];
 
-      if (checksum == rx_checksum) {
-        // Valid frame: decode 6 little-endian int16 angles 
-        for (size_t j = 0; j < N; j++) {
-          uint8_t lo = rx_buffer_[i + 1 + 2*j];
-          uint8_t hi = rx_buffer_[i + 1 + 2*j + 1];
-          int16_t raw = static_cast<int16_t>(static_cast<uint16_t>(hi) << 8 | lo);
-          double angle = static_cast<double>(raw) / pos_scale_;
-          if (j < hw_states_.size()) {
-            double prev = hw_states_[j];
-            hw_states_[j] = angle;
-            hw_velocities_[j] = (hw_states_[j] - prev) / period.seconds(); // calculate velocity
-          }
-        }
+      if (checksum != rx_checksum) {
+        i++;
+        continue;
+      }
 
-        i += FRAME_LEN; // advance past this frame
+      if (header == kSystemCommandHeader)
+      {
+        handle_system_event(rx_buffer_[i + 1]);
+        i += kSystemFrameLength;
+        continue;
+      }
 
-        // if this is the first valid feedback, mark it
-        last_feedback_time_ = get_clock()->now();
-        frame_received = true;
-        if (!initial_positions_received_) {
-          for (size_t j = 0; j < hw_states_.size(); j++) {
-            hw_commands_[j] = hw_states_[j]; // align commands to states
-          }
-          initial_positions_received_ = true;
-          RCLCPP_WARN(get_logger(),
-            "Initial positions synced from hardware. Writes now enabled.");
-        }
-        // optionally log decoded values occasionally 
+      // Valid frame: decode 6 little-endian int16 angles 
+      const size_t joints_to_decode = std::min(arm_joint_count(), kArmFeedbackJointCount);
+      for (size_t j = 0; j < joints_to_decode; j++) {
+        uint8_t lo = rx_buffer_[i + 1 + 2*j];
+        uint8_t hi = rx_buffer_[i + 1 + 2*j + 1];
+        int16_t raw = static_cast<int16_t>(static_cast<uint16_t>(hi) << 8 | lo);
+        double angle = static_cast<double>(raw) / pos_scale_;
+        double prev = hw_states_[j];
+        hw_states_[j] = angle;
+        hw_velocities_[j] = (hw_states_[j] - prev) / dt;
+      }
+
+      i += kArmFrameLength; // advance past this frame
+
+      // if this is the first valid feedback, mark it
+      last_feedback_time_ = get_clock()->now();
+      frame_received = true;
+      if (!initial_positions_received_) {
+        sync_commands_to_states();
+        initial_positions_received_ = true;
+        RCLCPP_WARN(get_logger(),
+          "Initial positions synced from hardware. Writes now enabled.");
+      }
+      if (sync_commands_on_next_feedback_) {
+        sync_commands_to_states();
+        last_sent_commands_ = hw_commands_;
+        sync_commands_on_next_feedback_ = false;
+        RCLCPP_WARN(get_logger(),
+          "Homing complete feedback received. Commands resynced to measured positions.");
+      }
+      if (arm_joint_count() >= kArmFeedbackJointCount) {
         RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 1000, 
           "Read positions: %.3f %.3f %.3f %.3f %.3f %.3f",
           hw_states_[0], hw_states_[1], hw_states_[2],
           hw_states_[3], hw_states_[4], hw_states_[5]);
- 
-      } else {
-        // Bad checksum; skip this header 
-        i++;
       }
     }
 
@@ -655,9 +713,12 @@ hardware_interface::return_type MyArmHardware::read(
       int16_t cur_units = 0;
       if (gripper_try_parse_state(gripper_rx_, cur_units)) {
         double ros_pos = units_to_grip(cur_units);
-        double prev = hw_states_[6];
-        hw_states_[6] = ros_pos;
-        hw_velocities_[6] = (hw_states_[6] - prev) / period.seconds();
+        if (has_aux_joint()) {
+          const size_t aux_idx = aux_joint_index();
+          double prev = hw_states_[aux_idx];
+          hw_states_[aux_idx] = ros_pos;
+          hw_velocities_[aux_idx] = (hw_states_[aux_idx] - prev) / safe_period_seconds(period);
+        }
         // (Optional)
         RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 2000,
           "Gripper read: units %d -> ROS %.3f", (int)cur_units, ros_pos);
@@ -682,24 +743,32 @@ hardware_interface::return_type MyArmHardware::write(
     return hardware_interface::return_type::OK;
   }
 
+  if (!can_write_motion_commands())
+  {
+    sync_commands_to_states();
+    RCLCPP_WARN_THROTTLE(get_logger(), *clock_, 2000,
+      "Skipping write(): ROS-master homing has not released motion commands yet.");
+    return hardware_interface::return_type::OK;
+  }
+
   // ---- Gripper TX (full-duplex same port) ----
-  if (gripper_ok_) {
-    const auto now = get_clock()->now();
-    const double ros_cmd = hw_commands_[6];              // ROS units (e.g., radians)
-      uint16_t tgt = grip_to_units(ros_cmd);
-      try {
-        std::scoped_lock gk(gripper_mtx_);
-        auto f = gripper_pack_target(gripper_id_, tgt);
-        gripper_.Write(f);
-        gripper_.DrainWriteBuffer();
-        // (Optional throttle)
-        RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 2000,
-          "Gripper write: ROS %.3f -> units %u", ros_cmd, (unsigned)tgt);
-      } catch (const std::exception& e) {
-        gripper_ok_ = false;
-        RCLCPP_ERROR_THROTTLE(get_logger(), *clock_, 2000,
-          "Gripper write failed: %s", e.what());
-      }
+  if (gripper_ok_ && has_aux_joint()) {
+    const size_t aux_idx = aux_joint_index();
+    const double ros_cmd = hw_commands_[aux_idx];              // ROS units (e.g., radians)
+    uint16_t tgt = grip_to_units(ros_cmd);
+    try {
+      std::scoped_lock gk(gripper_mtx_);
+      auto f = gripper_pack_target(gripper_id_, tgt);
+      gripper_.Write(f);
+      gripper_.DrainWriteBuffer();
+      // (Optional throttle)
+      RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 2000,
+        "Gripper write: ROS %.3f -> units %u", ros_cmd, (unsigned)tgt);
+    } catch (const std::exception& e) {
+      gripper_ok_ = false;
+      RCLCPP_ERROR_THROTTLE(get_logger(), *clock_, 2000,
+        "Gripper write failed: %s", e.what());
+    }
     
   }
 
@@ -725,39 +794,40 @@ hardware_interface::return_type MyArmHardware::write(
     }
     // Build frame: 0xFF + 6*int16(le) + checksum
     // If URDF lists more than 6 joints we’ll send first 6; fewer => pad zeros.
-    const size_t N = 6;
-    std::vector<uint8_t> frame(14, 0); // 1+12+1
-    frame[0] = 0xFF;  // header
-    for (size_t i = 0; i < N; ++i)
+    const size_t joints_to_send = std::min(arm_joint_count(), kArmFeedbackJointCount);
+    std::vector<uint8_t> frame(kArmFrameLength, 0); // 1+12+1
+    frame[0] = kArmCommandHeader;  // header
+    for (size_t i = 0; i < joints_to_send; ++i)
     {
-      double pos = (i < hw_commands_.size()) ? hw_commands_[i] : 0.0;
-      long scaled = std::lround(pos * pos_scale_);
+      long scaled = std::lround(hw_commands_[i] * pos_scale_);
       int16_t data16 = clamp_to_i16(scaled);
       frame[1 + 2 * i] = static_cast<uint8_t>(data16 & 0xFF);         // LSB
       frame[1 + 2 * i + 1] = static_cast<uint8_t>((data16 >> 8) & 0xFF); // MSB
       if (i < last_sent_commands_.size())
         last_sent_commands_[i] = static_cast<double>(data16) / pos_scale_;
     }
-    for (size_t i = N; i < last_sent_commands_.size() && i < hw_commands_.size(); ++i)
+    for (size_t i = joints_to_send; i < last_sent_commands_.size() && i < hw_commands_.size(); ++i)
       last_sent_commands_[i] = hw_commands_[i];
 
 
     // checksum = sum(header + payload) & 0xFF
     uint8_t sum = 0;
-    for (size_t i = 0; i < 13; i++) {
+    for (size_t i = 0; i < kArmFrameLength - 1; i++) {
       sum += frame[i];
     }
-    frame[13] = sum;
+    frame[kArmFrameLength - 1] = sum;
 
     try
     {
       std::scoped_lock lk(serial_mtx_);
       serial_.Write(frame);
       // RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 1000, "write() OK");
-      RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 1000, 
-          "Write positions: %.3f %.3f %.3f %.3f %.3f %.3f",
-          hw_commands_[0], hw_commands_[1], hw_commands_[2],
-          hw_commands_[3], hw_commands_[4], hw_commands_[5]);
+      if (arm_joint_count() >= kArmFeedbackJointCount) {
+        RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 1000, 
+            "Write positions: %.3f %.3f %.3f %.3f %.3f %.3f",
+            hw_commands_[0], hw_commands_[1], hw_commands_[2],
+            hw_commands_[3], hw_commands_[4], hw_commands_[5]);
+      }
     }
     catch (const std::exception & e)
     {
@@ -1155,14 +1225,12 @@ MyArmHardware::on_cleanup(const rclcpp_lifecycle::State & /*previous_state*/)
     feedback_display_failed_ = false;
   }
   close_feedback_csv();
+  teardown_homing_interface();
 
   // Close writer port
   try {
     std::scoped_lock lk(serial_mtx_);
-    if (serial_.IsOpen()) {
-      serial_.FlushIOBuffers();          // optional: discard pending I/O
-      serial_.Close();
-    }
+    close_serial_port(serial_);
     serial_ok_ = false;
   } catch (const std::exception &e) {
     RCLCPP_WARN(get_logger(), "Error while closing serial writer: %s", e.what());
@@ -1171,13 +1239,19 @@ MyArmHardware::on_cleanup(const rclcpp_lifecycle::State & /*previous_state*/)
   // Close reader port (if you use a dedicated one)
   try {
     std::scoped_lock rk(reader_mtx_);
-    if (reader_.IsOpen()) {
-      reader_.FlushIOBuffers();
-      reader_.Close();
-    }
+    close_serial_port(reader_);
     reader_ok_ = false;
   } catch (const std::exception &e) {
     RCLCPP_WARN(get_logger(), "Error while closing serial reader: %s", e.what());
+  }
+
+  try {
+    std::scoped_lock gk(gripper_mtx_);
+    close_serial_port(gripper_);
+    gripper_ok_ = false;
+    gripper_rx_.clear();
+  } catch (const std::exception &e) {
+    RCLCPP_WARN(get_logger(), "Error while closing gripper serial port: %s", e.what());
   }
 
   // Clear any accumulated RX parsing buffer
@@ -1196,6 +1270,301 @@ MyArmHardware::on_shutdown(const rclcpp_lifecycle::State &)
   // Reuse on_cleanup to close ports
   (void)on_cleanup(rclcpp_lifecycle::State());
   return hardware_interface::CallbackReturn::SUCCESS;
+}
+
+void MyArmHardware::reset_joint_buffers(double value)
+{
+  reset_vector(hw_states_, value);
+  reset_vector(hw_commands_, value);
+  reset_vector(hw_velocities_, value);
+}
+
+void MyArmHardware::sync_commands_to_states()
+{
+  if (hw_commands_.size() != hw_states_.size())
+    hw_commands_.resize(hw_states_.size(), 0.0);
+  std::copy(hw_states_.begin(), hw_states_.end(), hw_commands_.begin());
+}
+
+size_t MyArmHardware::arm_joint_count() const
+{
+  return std::min(info_.joints.size(), kArmFeedbackJointCount);
+}
+
+bool MyArmHardware::has_aux_joint() const
+{
+  return info_.joints.size() > kArmFeedbackJointCount;
+}
+
+size_t MyArmHardware::aux_joint_index() const
+{
+  return info_.joints.empty() ? 0 : info_.joints.size() - 1;
+}
+
+void MyArmHardware::setup_homing_interface()
+{
+  if (homing_node_)
+    return;
+
+  homing_node_ = std::make_shared<rclcpp::Node>("arm_homing_bridge");
+  auto latched_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+
+  homing_status_pub_ = homing_node_->create_publisher<std_msgs::msg::String>(
+    kHomingStatusTopic, latched_qos);
+  homing_state_pub_ = homing_node_->create_publisher<std_msgs::msg::UInt8>(
+    kHomingStateTopic, latched_qos);
+
+  homing_init_srv_ = homing_node_->create_service<std_srvs::srv::Trigger>(
+    kHomingInitService,
+    [this](
+      const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+      std::string message;
+      response->success = start_damiao_initialization("service", message);
+      response->message = message;
+    });
+
+  homing_confirm_srv_ = homing_node_->create_service<std_srvs::srv::Trigger>(
+    kHomingConfirmService,
+    [this](
+      const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+      std::string message;
+      response->success = confirm_drop_pose("service", message);
+      response->message = message;
+    });
+
+  homing_init_sub_ = homing_node_->create_subscription<std_msgs::msg::Empty>(
+    kHomingInitTopic,
+    rclcpp::QoS(1),
+    [this](const std_msgs::msg::Empty::SharedPtr /*msg*/)
+    {
+      std::string message;
+      const bool ok = start_damiao_initialization("topic", message);
+      if (ok)
+        RCLCPP_INFO(get_logger(), "%s", message.c_str());
+      else
+        RCLCPP_WARN(get_logger(), "%s", message.c_str());
+    });
+
+  homing_drop_pose_sub_ = homing_node_->create_subscription<std_msgs::msg::Empty>(
+    kHomingConfirmTopic,
+    rclcpp::QoS(1),
+    [this](const std_msgs::msg::Empty::SharedPtr /*msg*/)
+    {
+      std::string message;
+      const bool ok = confirm_drop_pose("topic", message);
+      if (ok)
+        RCLCPP_INFO(get_logger(), "%s", message.c_str());
+      else
+        RCLCPP_WARN(get_logger(), "%s", message.c_str());
+    });
+
+  homing_executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+  homing_executor_->add_node(homing_node_);
+  homing_spin_thread_ = std::thread([executor = homing_executor_]() { executor->spin(); });
+}
+
+void MyArmHardware::teardown_homing_interface()
+{
+  if (homing_executor_)
+    homing_executor_->cancel();
+  if (homing_spin_thread_.joinable())
+    homing_spin_thread_.join();
+  if (homing_executor_ && homing_node_)
+    homing_executor_->remove_node(homing_node_);
+  homing_init_srv_.reset();
+  homing_confirm_srv_.reset();
+  homing_init_sub_.reset();
+  homing_drop_pose_sub_.reset();
+  homing_status_pub_.reset();
+  homing_state_pub_.reset();
+  homing_executor_.reset();
+  homing_node_.reset();
+}
+
+void MyArmHardware::publish_homing_state(
+  RosMasterHomingState state,
+  const std::string & message)
+{
+  {
+    std::lock_guard<std::mutex> lock(homing_state_mtx_);
+    homing_state_ = state;
+  }
+
+  if (homing_status_pub_)
+  {
+    std_msgs::msg::String status_msg;
+    status_msg.data = message;
+    homing_status_pub_->publish(status_msg);
+  }
+  if (homing_state_pub_)
+  {
+    std_msgs::msg::UInt8 state_msg;
+    state_msg.data = static_cast<uint8_t>(state);
+    homing_state_pub_->publish(state_msg);
+  }
+}
+
+bool MyArmHardware::send_system_command(uint8_t command_code, std::string & failure_reason)
+{
+  if (!serial_ok_)
+  {
+    failure_reason = "Writer serial port is not available, so the homing command could not be sent.";
+    return false;
+  }
+
+  try
+  {
+    auto frame = pack_system_command(command_code);
+    std::scoped_lock lk(serial_mtx_);
+    serial_.Write(frame);
+    serial_.DrainWriteBuffer();
+    return true;
+  }
+  catch (const std::exception & e)
+  {
+    failure_reason = std::string("Failed to send homing command to STM32: ") + e.what();
+    serial_ok_ = false;
+    return false;
+  }
+}
+
+bool MyArmHardware::start_damiao_initialization(const std::string & source, std::string & message)
+{
+  RosMasterHomingState state;
+  {
+    std::lock_guard<std::mutex> lock(homing_state_mtx_);
+    state = homing_state_;
+  }
+
+  if (state == RosMasterHomingState::WAITING_DAMIAO_READY)
+  {
+    message = "Damiao initialization command was already sent. Waiting for FLAG_DAMIAO_READY from STM32.";
+    return false;
+  }
+  if (state == RosMasterHomingState::WAITING_OPERATOR_DROP_POSE)
+  {
+    message = "STM32 already reported FLAG_DAMIAO_READY. Move to the drop pose, then confirm drop pose.";
+    return false;
+  }
+  if (state == RosMasterHomingState::WAITING_ALL_READY)
+  {
+    message = "Drop pose was already confirmed. Waiting for FLAG_ALL_READY from STM32.";
+    return false;
+  }
+  if (state == RosMasterHomingState::ALL_READY)
+  {
+    message = "Homing is already complete. Normal operation is active.";
+    return false;
+  }
+
+  std::string failure_reason;
+  if (!send_system_command(kCmdStartDamiaoInit, failure_reason))
+  {
+    message = failure_reason;
+    return false;
+  }
+
+  message =
+    "FLAG_START_DAMIAO_INIT sent to STM32 from " + source +
+    ". Waiting for STM32 to activate the Damiao motors and reply with FLAG_DAMIAO_READY.";
+  publish_homing_state(RosMasterHomingState::WAITING_DAMIAO_READY, message);
+  RCLCPP_WARN(get_logger(), "%s", message.c_str());
+  return true;
+}
+
+bool MyArmHardware::confirm_drop_pose(const std::string & source, std::string & message)
+{
+  RosMasterHomingState state;
+  {
+    std::lock_guard<std::mutex> lock(homing_state_mtx_);
+    state = homing_state_;
+  }
+
+  if (state == RosMasterHomingState::WAITING_INIT_COMMAND)
+  {
+    message = "Damiao initialization has not been started yet. Click Initialize Damiao or call /arm_homing/start_initialization first.";
+    return false;
+  }
+  if (state == RosMasterHomingState::WAITING_DAMIAO_READY)
+  {
+    message = "STM32 has not reported FLAG_DAMIAO_READY yet. Wait for the ready prompt before confirming the drop pose.";
+    return false;
+  }
+  if (state == RosMasterHomingState::WAITING_ALL_READY)
+  {
+    message = "FLAG_REACHED_DROP_POSE was already sent. Waiting for FLAG_ALL_READY from STM32.";
+    return false;
+  }
+  if (state == RosMasterHomingState::ALL_READY)
+  {
+    message = "Homing is already complete. Normal operation is active.";
+    return false;
+  }
+
+  std::string failure_reason;
+  if (!send_system_command(kCmdReachedDropPose, failure_reason))
+  {
+    message = failure_reason;
+    return false;
+  }
+
+  message =
+    "FLAG_REACHED_DROP_POSE sent to STM32 from " + source +
+    ". The MCU should wait 2 seconds, call cm_motor_set_absolute_zero(), "
+    "then reply with FLAG_ALL_READY.";
+  publish_homing_state(RosMasterHomingState::WAITING_ALL_READY, message);
+  RCLCPP_WARN(get_logger(), "%s", message.c_str());
+  return true;
+}
+
+bool MyArmHardware::can_write_motion_commands()
+{
+  std::lock_guard<std::mutex> lock(homing_state_mtx_);
+  return homing_state_ == RosMasterHomingState::WAITING_OPERATOR_DROP_POSE ||
+         homing_state_ == RosMasterHomingState::ALL_READY;
+}
+
+void MyArmHardware::handle_system_event(uint8_t event_code)
+{
+  switch (event_code)
+  {
+    case kEventDamiaoReady:
+      publish_homing_state(
+        RosMasterHomingState::WAITING_OPERATOR_DROP_POSE,
+        "STM32 sent FLAG_DAMIAO_READY. Manually move the arm to the drop pose, then click "
+        "Confirm Drop Pose, run "
+        "`ros2 service call /arm_homing/confirm_drop_pose std_srvs/srv/Trigger {}` "
+        "or publish std_msgs/msg/Empty to /arm_homing/reached_drop_pose.");
+      RCLCPP_WARN(
+        get_logger(),
+        "STM32 homing handshake: FLAG_DAMIAO_READY received. Move the arm to the drop pose, "
+        "then call `%s` or publish to `%s`.",
+        kHomingConfirmService,
+        kHomingConfirmTopic);
+      break;
+
+    case kEventAllReady:
+      sync_commands_to_states();
+      last_sent_commands_ = hw_commands_;
+      sync_commands_on_next_feedback_ = true;
+      publish_homing_state(
+        RosMasterHomingState::ALL_READY,
+        "STM32 sent FLAG_ALL_READY. Homing is complete and the arm is back in normal operation.");
+      RCLCPP_WARN(
+        get_logger(),
+        "STM32 homing handshake: FLAG_ALL_READY received. Homing is complete.");
+      break;
+
+    default:
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *clock_, 2000,
+        "Ignoring unknown STM32 system event 0x%02X.", event_code);
+      break;
+  }
 }
 
 }  // namespace my_arm_hardware

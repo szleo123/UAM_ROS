@@ -15,7 +15,7 @@
 #pragma once
 
 #include <array>
-#include <chrono>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -23,21 +23,26 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <libserial/SerialPort.h>
-#include <libserial/SerialStream.h>
-
 #include "hardware_interface/handle.hpp"
 #include "hardware_interface/hardware_info.hpp"
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/types/hardware_interface_return_values.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/clock.hpp"
+#include "rclcpp/executors/single_threaded_executor.hpp"
 #include "rclcpp/logger.hpp"
 #include "rclcpp/macros.hpp"
+#include "rclcpp/node.hpp"
 #include "rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp"
 #include "rclcpp_lifecycle/state.hpp"
+#include "std_msgs/msg/empty.hpp"
+#include "std_msgs/msg/string.hpp"
+#include "std_msgs/msg/u_int8.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
 struct _XDisplay;
 struct _XGC;
@@ -88,6 +93,15 @@ public:
   bool wait_for_initial_feedback(std::array<double,6>& q, double timeout_sec);
 
 private:
+  enum class RosMasterHomingState : uint8_t
+  {
+    WAITING_INIT_COMMAND = 0,
+    WAITING_DAMIAO_READY = 1,
+    WAITING_OPERATOR_DROP_POSE = 2,
+    WAITING_ALL_READY = 3,
+    ALL_READY = 4,
+  };
+
   // Parameters for the Serial communications 
   std::string serial_port_path_ {"/dev/ttyUSB0"};
   std::string reader_port_path_ {"/dev/ttyUSB1"};
@@ -126,10 +140,6 @@ private:
 
   // Used for reading data from the gripper 
   std::vector<uint8_t> gripper_rx_;
-  bool grip_waiting_ = false; 
-  rclcpp::Time grip_deadline_; 
-  double grip_last_send_ros_ = std::numeric_limits<double>::quiet_NaN();
-  rclcpp::Time last_grip_tx_;
 
   // Used for prevent initial jumps in position when no feedback is available
   bool initial_positions_received_ = false;
@@ -145,19 +155,24 @@ private:
     return static_cast<int16_t>(val);
   }
 
-  const double grip_ros_min_ = -0.69; 
-  const double grip_ros_max_ = 0.0;
+  double aux_joint_min_ = -0.69;
+  double aux_joint_max_ = 0.0;
   inline uint16_t grip_to_units(double ros) const {
-    
-    double x = std::min(std::max(ros, this->grip_ros_min_), this->grip_ros_max_);
-    double t = (x - this->grip_ros_min_) / (this->grip_ros_max_ - this->grip_ros_min_); // 0..1
+    double lo = std::min(aux_joint_min_, aux_joint_max_);
+    double hi = std::max(aux_joint_min_, aux_joint_max_);
+    double x = std::min(std::max(ros, lo), hi);
+    double span = hi - lo;
+    if (span <= std::numeric_limits<double>::epsilon()) {
+      return 60;
+    }
+    double t = (x - lo) / span; // 0..1
     return static_cast<uint16_t>(std::lround(t * (1390.0 - 60.0)) + 60.0); // units range: 60..1390
   }
 
   inline double units_to_grip(int16_t units) const {
     double u = std::min(std::max((double)units, 60.0), 1390.0);
     double t = (u - 60.0) / (1390.0 - 60.0); // 0..1
-    return this->grip_ros_min_ + t * (this->grip_ros_max_ - this->grip_ros_min_);
+    return aux_joint_min_ + t * (aux_joint_max_ - aux_joint_min_);
   }
 
   // Optional realtime feedback UI
@@ -200,6 +215,32 @@ private:
   void ensure_feedback_csv_ready();
   void log_feedback_csv(size_t joint_idx, double stamp_sec, double feedback, double command);
   void close_feedback_csv();
+  void reset_joint_buffers(double value);
+  void sync_commands_to_states();
+  size_t arm_joint_count() const;
+  bool has_aux_joint() const;
+  size_t aux_joint_index() const;
+  void setup_homing_interface();
+  void teardown_homing_interface();
+  void publish_homing_state(RosMasterHomingState state, const std::string & message);
+  void handle_system_event(uint8_t event_code);
+  bool send_system_command(uint8_t command_code, std::string & failure_reason);
+  bool start_damiao_initialization(const std::string & source, std::string & message);
+  bool confirm_drop_pose(const std::string & source, std::string & message);
+  bool can_write_motion_commands();
+
+  std::shared_ptr<rclcpp::Node> homing_node_;
+  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> homing_executor_;
+  std::thread homing_spin_thread_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr homing_status_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr homing_state_pub_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr homing_init_sub_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr homing_drop_pose_sub_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr homing_init_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr homing_confirm_srv_;
+  std::mutex homing_state_mtx_;
+  RosMasterHomingState homing_state_{RosMasterHomingState::WAITING_INIT_COMMAND};
+  bool sync_commands_on_next_feedback_{false};
 };
 
 }  // namespace my_arm_hardware

@@ -1,10 +1,10 @@
 # Default initial positions for arm's ros2_control fake system
 
 initial_positions:
-  joint1: 0
-  joint2: 0
-  joint3: 0
-  joint4: 0
-  joint5: 0
-  joint6: 0
-  joint7: 0
+  joint_1: 0
+  joint_2: 0
+  joint_3: 0
+  joint_4: 0
+  joint_5: 0
+  joint_6: 0
+  tool_joint: 0

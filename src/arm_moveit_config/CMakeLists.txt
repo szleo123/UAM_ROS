@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.22)
 project(arm_moveit_config)
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
+
+ament_python_install_package(arm_moveit_config_utils)
 
 ament_package()
 

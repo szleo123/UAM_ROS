@@ -1,6 +1,25 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="arm">
     <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+    <xacro:arg name="use_fake_hardware" default="true" />
+    <xacro:arg name="serial_port" default="/dev/ttyUSB4" />
+    <xacro:arg name="reader_port" default="/dev/ttyUSB5" />
+    <xacro:arg name="gripper_port" default="/dev/ttyUSB6" />
+    <xacro:arg name="baudrate" default="230400" />
+    <xacro:arg name="gripper_baudrate" default="115200" />
+    <xacro:arg name="position_scale" default="1000" />
+    <xacro:arg name="hw_slowdown" default="10" />
+    <xacro:arg name="initial_read_timeout_sec" default="2.0" />
+    <xacro:arg name="aux_joint_min" default="-3.14" />
+    <xacro:arg name="aux_joint_max" default="3.14" />
+    <xacro:arg name="enable_feedback_plot" default="false" />
+    <xacro:arg name="feedback_plot_rate_hz" default="100" />
+    <xacro:arg name="feedback_plot_min_rad" default="-1.0" />
+    <xacro:arg name="feedback_plot_max_rad" default="1.0" />
+    <xacro:arg name="feedback_plot_joint_filter" default="joint_1,joint_2,joint_3" />
+    <xacro:arg name="feedback_plot_csv_enabled" default="false" />
+    <xacro:arg name="feedback_plot_csv_file" default="/tmp/joint_monitor.csv" />
+    <xacro:arg name="feedback_plot_csv_append" default="false" />
 
     <!-- Import arm urdf file -->
     <xacro:include filename="$(find arm)/urdf/arm.urdf" />
@@ -16,7 +35,7 @@
       name="limit_z_max"
       parent_link="uav_mount"
       xyz="0 0 0.05"                
-      rpy="0 0 0"
+      rpy="0 0 1.57"
       size="0.4 0.64 0.01"            
       color="0.9 0.1 0.1 0.2"
       collision_only="false"/>
@@ -24,8 +43,8 @@
     <xacro:add_world_box
       name="limit_y_min"
       parent_link="uav_mount"
-      xyz="0 -0.32 -0.8"                
-      rpy="-1.57 0 0"
+      xyz="0.32 0 -0.75"                
+      rpy="1.57 0 1.57"
       size="0.4 1.6 0.01"            
       color="0.9 0.1 0.1 0.2"
       collision_only="false"/>
@@ -33,12 +52,33 @@
     <xacro:add_world_box
       name="limit_y_max"
       parent_link="uav_mount"
-      xyz="0 0.32 -0.8"                
-      rpy="1.57 0 0"
+      xyz="-0.32 0 -0.75"                
+      rpy="1.57 0 1.57"
       size="0.4 1.6 0.01"            
       color="0.9 0.1 0.1 0.2"
       collision_only="false"/>
     
-    <xacro:arm_ros2_control name="FakeSystem" initial_positions_file="$(arg initial_positions_file)"/>
+    <xacro:arm_ros2_control
+      name="ArmSystem"
+      initial_positions_file="$(arg initial_positions_file)"
+      use_fake_hardware="$(arg use_fake_hardware)"
+      serial_port="$(arg serial_port)"
+      reader_port="$(arg reader_port)"
+      gripper_port="$(arg gripper_port)"
+      baudrate="$(arg baudrate)"
+      gripper_baudrate="$(arg gripper_baudrate)"
+      position_scale="$(arg position_scale)"
+      hw_slowdown="$(arg hw_slowdown)"
+      initial_read_timeout_sec="$(arg initial_read_timeout_sec)"
+      aux_joint_min="$(arg aux_joint_min)"
+      aux_joint_max="$(arg aux_joint_max)"
+      enable_feedback_plot="$(arg enable_feedback_plot)"
+      feedback_plot_rate_hz="$(arg feedback_plot_rate_hz)"
+      feedback_plot_min_rad="$(arg feedback_plot_min_rad)"
+      feedback_plot_max_rad="$(arg feedback_plot_max_rad)"
+      feedback_plot_joint_filter="$(arg feedback_plot_joint_filter)"
+      feedback_plot_csv_enabled="$(arg feedback_plot_csv_enabled)"
+      feedback_plot_csv_file="$(arg feedback_plot_csv_file)"
+      feedback_plot_csv_append="$(arg feedback_plot_csv_append)"/>
 
 </robot>

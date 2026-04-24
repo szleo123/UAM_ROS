@@ -20,12 +20,16 @@
   <depend>backward_ros</depend>
   <depend>hardware_interface</depend>
   <depend>pluginlib</depend>
+  <depend>rclpy</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_lifecycle</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>libserial-dev</depend>
   <depend>libx11-dev</depend>
 
   <exec_depend>controller_manager</exec_depend>
+  <exec_depend>arm_moveit_config</exec_depend>
   <exec_depend>forward_command_controller</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>joint_state_publisher_gui</exec_depend>

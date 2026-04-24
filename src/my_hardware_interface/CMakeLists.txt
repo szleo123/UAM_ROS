@@ -14,6 +14,8 @@ set(THIS_PACKAGE_INCLUDE_DEPENDS
   pluginlib
   rclcpp
   rclcpp_lifecycle
+  std_msgs
+  std_srvs
 )
 
 # find dependencies
@@ -69,6 +71,10 @@ install(
 install(
   DIRECTORY bringup/launch bringup/config
   DESTINATION share/my_arm_hardware
+)
+install(
+  PROGRAMS scripts/homing_button.py
+  DESTINATION lib/${PROJECT_NAME}
 )
 install(TARGETS my_arm_hardware
   EXPORT export_my_arm_hardware

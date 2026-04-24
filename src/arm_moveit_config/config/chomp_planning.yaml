@@ -25,7 +25,7 @@ ridge_factor: 0.0
 use_pseudo_inverse: false
 pseudo_inverse_ridge_factor: 1e-4
 animate_endeffector: false
-animate_endeffector_segment: "joint7"
+animate_endeffector_segment: "tool_joint"
 joint_update_limit: 0.1
 collision_clearance: 0.2
 collision_threshold: 0.07

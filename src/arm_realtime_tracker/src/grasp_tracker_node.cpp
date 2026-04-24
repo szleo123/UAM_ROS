@@ -63,7 +63,7 @@ public:
     arm_home_named_target_      = this->declare_parameter<std::string>("arm_home_named_target", "zero");
     gripper_close_named_target_ = this->declare_parameter<std::string>("gripper_close_named_target", "close");
     gripper_open_named_target_  = this->declare_parameter<std::string>("gripper_open_named_target", "open");
-    gripper_joint_name_         = this->declare_parameter<std::string>("gripper_joint_name", "joint7");
+    gripper_joint_name_         = this->declare_parameter<std::string>("gripper_joint_name", "tool_joint");
     grasp_detection_threshold_  = this->declare_parameter<double>("grasp_detection_threshold", 0.05);
 
     pos_thr_m_        = this->declare_parameter<double>("deadband_pos_m", 0.005);
@@ -629,9 +629,9 @@ private:
   std::string arm_home_named_target_{"zero"};
   std::string gripper_close_named_target_{"close"};
   std::string gripper_open_named_target_{"open"};
-  std::string gripper_joint_name_{"joint7"};
+  std::string gripper_joint_name_{"tool_joint"};
   double grasp_detection_threshold_{0.00};
-  double planned_gripper_close_position_{-0.69};
+  double planned_gripper_close_position_{-3.14};
   double pos_thr_m_{0.005};
   double ang_thr_rad_{0.02};
 
