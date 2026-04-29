@@ -113,7 +113,7 @@
     <parent link="link_1" />
     <child link="link_2" />
     <axis xyz="0 0 1" />
-    <limit lower="-3.14" upper="3.14" effort="0" velocity="2.0" />
+    <limit lower="0.0" upper="3.14" effort="0" velocity="2.0" />
   </joint>
 
   <link name="link_3">
@@ -150,7 +150,7 @@
     <parent link="link_2" />
     <child link="link_3" />
     <axis xyz="0 0 1" />
-    <limit lower="-3.14" upper="3.14" effort="0" velocity="2.0" />
+    <limit lower="0.0" upper="3.14" effort="0" velocity="2.0" />
   </joint>
 
   <link name="link_4">
@@ -224,7 +224,7 @@
     <parent link="link_4" />
     <child link="link_5" />
     <axis xyz="0 0 -1" />
-    <limit lower="-3.14" upper="3.14" effort="0" velocity="2.0" />
+    <limit lower="-3.14" upper="0.0" effort="0" velocity="2.0" />
   </joint>
 
   <link name="link_6">
@@ -305,8 +305,8 @@
   <link name="tool0"/>
 
   <joint name="tool0_fixed" type="fixed">
-    <parent link="tool_link"/>
+    <parent link="link_6"/>
     <child link="tool0"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <origin xyz="0 0.01 0.2" rpy="0 0 0"/>
   </joint>
 </robot>

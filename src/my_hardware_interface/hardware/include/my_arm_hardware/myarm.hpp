@@ -110,6 +110,7 @@ private:
   uint8_t gripper_id_ = 1; 
   double pos_scale_ {1000.0}; // rad -> int16 scale
   std::array<double, 6> arm_joint_signs_ {{1.0, 1.0, -1.0, 1.0, 1.0, 1.0}};
+  std::array<double, 6> arm_joint_offsets_ {{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
   double hw_slowdown_; // low-pass factor if no feedback 
 
   // Objects for logging

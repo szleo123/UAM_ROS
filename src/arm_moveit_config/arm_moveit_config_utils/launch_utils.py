@@ -24,6 +24,7 @@ COMMON_BRINGUP_ARGUMENT_NAMES = [
     "gripper_baudrate",
     "position_scale",
     "arm_joint_signs",
+    "arm_joint_offsets",
     "hw_slowdown",
     "initial_read_timeout_sec",
     "first_power_on",
@@ -78,12 +79,12 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "serial_port",
-            default_value="/dev/ttyUSB0",
+            default_value="/dev/ttyUSB1",
             description="Serial writer port for the real arm interface.",
         ),
         DeclareLaunchArgument(
             "reader_port",
-            default_value="/dev/ttyUSB1",
+            default_value="/dev/ttyUSB0",
             description="Serial reader port for the real arm interface.",
         ),
         DeclareLaunchArgument(
@@ -108,8 +109,14 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "arm_joint_signs",
-            default_value="1,1,-1,1,1,1",
+            default_value="-1,1,-1,1,1,1",
             description="Comma-separated signs mapping ROS arm joint positions to hardware positions.",
+        ),
+        DeclareLaunchArgument(
+            "arm_joint_offsets",
+            default_value="0,0,0,0,0,0",
+            # joint2: -0.031
+            description="Comma-separated ROS joint offsets in radians added to arm hardware feedback.",
         ),
         DeclareLaunchArgument(
             "hw_slowdown",
@@ -251,6 +258,7 @@ def robot_description_mappings():
         "gripper_baudrate": LaunchConfiguration("gripper_baudrate"),
         "position_scale": LaunchConfiguration("position_scale"),
         "arm_joint_signs": LaunchConfiguration("arm_joint_signs"),
+        "arm_joint_offsets": LaunchConfiguration("arm_joint_offsets"),
         "hw_slowdown": LaunchConfiguration("hw_slowdown"),
         "initial_read_timeout_sec": LaunchConfiguration("initial_read_timeout_sec"),
         "first_power_on": LaunchConfiguration("first_power_on"),

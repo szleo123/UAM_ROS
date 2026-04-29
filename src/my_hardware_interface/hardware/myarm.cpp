@@ -280,7 +280,8 @@ bool MyArmHardware::wait_for_initial_feedback(std::array<double,6>& q, double ti
         uint8_t lo = buf_local[i + 1 + 2*j];
         uint8_t hi = buf_local[i + 1 + 2*j + 1];
         int16_t raw = static_cast<int16_t>((static_cast<uint16_t>(hi) << 8) | lo);
-        q[j] = arm_joint_signs_[j] * static_cast<double>(raw) / pos_scale_;
+        q[j] = arm_joint_signs_[j] * static_cast<double>(raw) / pos_scale_ +
+               arm_joint_offsets_[j];
       }
       return true;
     }
@@ -334,6 +335,12 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
       }
       arm_joint_signs_[i] = sign < 0.0 ? -1.0 : 1.0;
     }
+  }
+  if (info_.hardware_parameters.count("arm_joint_offsets"))
+  {
+    const auto offsets = split_list(info_.hardware_parameters.at("arm_joint_offsets"));
+    for (size_t i = 0; i < offsets.size() && i < arm_joint_offsets_.size(); ++i)
+      arm_joint_offsets_[i] = std::stod(offsets[i]);
   }
 
   if (info_.hardware_parameters.count("hw_slowdown"))
@@ -434,10 +441,12 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
   }
 
   RCLCPP_INFO(get_logger(),
-              "Initialized MyArmSystem with %i joints, writer_port=%s, reader_port=%s, baud=%u, scale=%.1f, slowdown=%.1f, first_power_on=%s",
+              "Initialized MyArmSystem with %i joints, writer_port=%s, reader_port=%s, baud=%u, scale=%.1f, slowdown=%.1f, first_power_on=%s, arm_joint_offsets=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
               static_cast<int>(info_.joints.size()), serial_port_path_.c_str(),
               reader_port_path_.c_str(), baudrate_, pos_scale_, hw_slowdown_,
-              first_power_on_ ? "true" : "false");
+              first_power_on_ ? "true" : "false",
+              arm_joint_offsets_[0], arm_joint_offsets_[1], arm_joint_offsets_[2],
+              arm_joint_offsets_[3], arm_joint_offsets_[4], arm_joint_offsets_[5]);
   setup_homing_interface();
 
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -672,7 +681,8 @@ hardware_interface::return_type MyArmHardware::read(
         uint8_t lo = rx_buffer_[i + 1 + 2*j];
         uint8_t hi = rx_buffer_[i + 1 + 2*j + 1];
         int16_t raw = static_cast<int16_t>(static_cast<uint16_t>(hi) << 8 | lo);
-        double angle = arm_joint_signs_[j] * static_cast<double>(raw) / pos_scale_;
+        double angle = arm_joint_signs_[j] * static_cast<double>(raw) / pos_scale_ +
+                       arm_joint_offsets_[j];
         double prev = hw_states_[j];
         hw_states_[j] = angle;
         hw_velocities_[j] = (hw_states_[j] - prev) / dt;
@@ -835,12 +845,13 @@ hardware_interface::return_type MyArmHardware::write(
     for (size_t i = 0; i < joints_to_send; ++i)
     {
       const double sign = (i < arm_joint_signs_.size()) ? arm_joint_signs_[i] : 1.0;
-      long scaled = std::lround(sign * hw_commands_[i] * pos_scale_);
+      const double offset = (i < arm_joint_offsets_.size()) ? arm_joint_offsets_[i] : 0.0;
+      long scaled = std::lround(sign * (hw_commands_[i] - offset) * pos_scale_);
       int16_t data16 = clamp_to_i16(scaled);
       frame[1 + 2 * i] = static_cast<uint8_t>(data16 & 0xFF);         // LSB
       frame[1 + 2 * i + 1] = static_cast<uint8_t>((data16 >> 8) & 0xFF); // MSB
       if (i < last_sent_commands_.size())
-        last_sent_commands_[i] = sign * static_cast<double>(data16) / pos_scale_;
+        last_sent_commands_[i] = sign * static_cast<double>(data16) / pos_scale_ + offset;
     }
     for (size_t i = joints_to_send; i < last_sent_commands_.size() && i < hw_commands_.size(); ++i)
       last_sent_commands_[i] = hw_commands_[i];

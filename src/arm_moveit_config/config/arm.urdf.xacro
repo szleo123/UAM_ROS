@@ -9,6 +9,7 @@
     <xacro:arg name="gripper_baudrate" default="115200" />
     <xacro:arg name="position_scale" default="1000" />
     <xacro:arg name="arm_joint_signs" default="1,1,-1,1,1,1" />
+    <xacro:arg name="arm_joint_offsets" default="0,0,0,0,0,0" />
     <xacro:arg name="hw_slowdown" default="10" />
     <xacro:arg name="initial_read_timeout_sec" default="2.0" />
     <xacro:arg name="first_power_on" default="true" />
@@ -71,6 +72,7 @@
       gripper_baudrate="$(arg gripper_baudrate)"
       position_scale="$(arg position_scale)"
       arm_joint_signs="$(arg arm_joint_signs)"
+      arm_joint_offsets="$(arg arm_joint_offsets)"
       hw_slowdown="$(arg hw_slowdown)"
       initial_read_timeout_sec="$(arg initial_read_timeout_sec)"
       first_power_on="$(arg first_power_on)"
