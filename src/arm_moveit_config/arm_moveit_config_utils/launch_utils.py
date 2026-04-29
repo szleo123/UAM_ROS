@@ -23,8 +23,10 @@ COMMON_BRINGUP_ARGUMENT_NAMES = [
     "baudrate",
     "gripper_baudrate",
     "position_scale",
+    "arm_joint_signs",
     "hw_slowdown",
     "initial_read_timeout_sec",
+    "first_power_on",
     "aux_joint_min",
     "aux_joint_max",
     "enable_feedback_plot",
@@ -60,7 +62,8 @@ def common_bringup_launch_arguments(
     default_start_controllers="true",
     default_start_gripper_controller="true",
     default_start_handeye="false",
-    default_start_homing_button="false",
+    default_start_homing_button="true",
+    default_first_power_on="true",
 ):
     return [
         DeclareLaunchArgument(
@@ -75,12 +78,12 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "serial_port",
-            default_value="/dev/ttyUSB1",
+            default_value="/dev/ttyUSB0",
             description="Serial writer port for the real arm interface.",
         ),
         DeclareLaunchArgument(
             "reader_port",
-            default_value="/dev/ttyUSB0",
+            default_value="/dev/ttyUSB1",
             description="Serial reader port for the real arm interface.",
         ),
         DeclareLaunchArgument(
@@ -104,6 +107,11 @@ def common_bringup_launch_arguments(
             description="Hardware position scaling factor.",
         ),
         DeclareLaunchArgument(
+            "arm_joint_signs",
+            default_value="1,1,-1,1,1,1",
+            description="Comma-separated signs mapping ROS arm joint positions to hardware positions.",
+        ),
+        DeclareLaunchArgument(
             "hw_slowdown",
             default_value="10",
             description="Hardware slowdown factor passed to the ros2_control plugin.",
@@ -112,6 +120,14 @@ def common_bringup_launch_arguments(
             "initial_read_timeout_sec",
             default_value="2.0",
             description="How long to wait for initial hardware feedback before enabling writes.",
+        ),
+        DeclareLaunchArgument(
+            "first_power_on",
+            default_value=default_first_power_on,
+            description=(
+                "Whether this startup follows a full power cycle and must run the "
+                "ROS-master homing handshake before normal motion."
+            ),
         ),
         DeclareLaunchArgument(
             "aux_joint_min",
@@ -234,8 +250,10 @@ def robot_description_mappings():
         "baudrate": LaunchConfiguration("baudrate"),
         "gripper_baudrate": LaunchConfiguration("gripper_baudrate"),
         "position_scale": LaunchConfiguration("position_scale"),
+        "arm_joint_signs": LaunchConfiguration("arm_joint_signs"),
         "hw_slowdown": LaunchConfiguration("hw_slowdown"),
         "initial_read_timeout_sec": LaunchConfiguration("initial_read_timeout_sec"),
+        "first_power_on": LaunchConfiguration("first_power_on"),
         "aux_joint_min": LaunchConfiguration("aux_joint_min"),
         "aux_joint_max": LaunchConfiguration("aux_joint_max"),
         "enable_feedback_plot": LaunchConfiguration("enable_feedback_plot"),

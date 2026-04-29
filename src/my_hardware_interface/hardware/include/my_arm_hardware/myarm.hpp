@@ -15,7 +15,6 @@
 #pragma once
 
 #include <array>
-#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -110,6 +109,7 @@ private:
   unsigned int gripper_baudrate_ {115200};
   uint8_t gripper_id_ = 1; 
   double pos_scale_ {1000.0}; // rad -> int16 scale
+  std::array<double, 6> arm_joint_signs_ {{1.0, 1.0, -1.0, 1.0, 1.0, 1.0}};
   double hw_slowdown_; // low-pass factor if no feedback 
 
   // Objects for logging
@@ -146,6 +146,7 @@ private:
   double initial_read_timeout_sec_ = 2.0; 
   rclcpp::Time last_feedback_time_; // optional for diagnostics
   double feedback_stale_timeout_sec_ = 0.5;  // max allowed feedback age before writes stop
+  bool first_power_on_ = true;
 
   // Helpers 
   static inline int16_t clamp_to_i16(double val)
@@ -228,6 +229,9 @@ private:
   bool start_damiao_initialization(const std::string & source, std::string & message);
   bool confirm_drop_pose(const std::string & source, std::string & message);
   bool can_write_motion_commands();
+  void capture_post_homing_command_hold();
+  void finish_post_homing_command_hold();
+  void enforce_post_homing_command_hold();
 
   std::shared_ptr<rclcpp::Node> homing_node_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> homing_executor_;
@@ -241,6 +245,9 @@ private:
   std::mutex homing_state_mtx_;
   RosMasterHomingState homing_state_{RosMasterHomingState::WAITING_INIT_COMMAND};
   bool sync_commands_on_next_feedback_{false};
+  std::mutex command_hold_mtx_;
+  std::vector<double> post_homing_hold_commands_;
+  bool post_homing_command_hold_active_{false};
 };
 
 }  // namespace my_arm_hardware

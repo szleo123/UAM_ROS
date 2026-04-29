@@ -8,8 +8,10 @@
     <xacro:arg name="baudrate" default="230400"/>
     <xacro:arg name="gripper_baudrate" default="115200"/>
     <xacro:arg name="position_scale" default="1000"/>
+    <xacro:arg name="arm_joint_signs" default="1,1,-1,1,1,1"/>
     <xacro:arg name="hw_slowdown" default="10"/>
     <xacro:arg name="initial_read_timeout_sec" default="2.0"/>
+    <xacro:arg name="first_power_on" default="true"/>
     <xacro:arg name="aux_joint_min" default="-3.14"/>
     <xacro:arg name="aux_joint_max" default="3.14"/>
     <xacro:arg name="enable_feedback_plot" default="false"/>
@@ -43,8 +45,10 @@
         baudrate:='230400'
         gripper_baudrate:='115200'
         position_scale:='1000'
+        arm_joint_signs:='1,1,-1,1,1,1'
         hw_slowdown:='10'
         initial_read_timeout_sec:='2.0'
+        first_power_on:='true'
         aux_joint_min:='-3.14'
         aux_joint_max:='3.14'
         enable_feedback_plot:='false'
@@ -70,8 +74,10 @@
                     <param name="baudrate">${baudrate}</param>
                     <param name="gripper_baudrate">${gripper_baudrate}</param>
                     <param name="position_scale">${position_scale}</param>
+                    <param name="arm_joint_signs">${arm_joint_signs}</param>
                     <param name="hw_slowdown">${hw_slowdown}</param>
                     <param name="initial_read_timeout_sec">${initial_read_timeout_sec}</param>
+                    <param name="first_power_on">${first_power_on}</param>
                     <param name="aux_joint_min">${aux_joint_min}</param>
                     <param name="aux_joint_max">${aux_joint_max}</param>
                     <param name="enable_feedback_plot">${enable_feedback_plot}</param>

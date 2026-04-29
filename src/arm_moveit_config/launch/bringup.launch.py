@@ -2,7 +2,7 @@ from launch import LaunchDescription
 from launch.actions import RegisterEventHandler
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 from arm_moveit_config_utils.launch_utils import (
@@ -129,7 +129,19 @@ def generate_launch_description():
         executable="homing_button.py",
         name="arm_homing_button",
         output="screen",
-        condition=IfCondition(LaunchConfiguration("start_homing_button")),
+        condition=IfCondition(
+            PythonExpression(
+                [
+                    "'",
+                    LaunchConfiguration("start_homing_button"),
+                    "'.lower() == 'true' and '",
+                    LaunchConfiguration("use_fake_hardware"),
+                    "'.lower() != 'true' and '",
+                    LaunchConfiguration("first_power_on"),
+                    "'.lower() == 'true'",
+                ]
+            )
+        ),
     )
 
     return LaunchDescription(

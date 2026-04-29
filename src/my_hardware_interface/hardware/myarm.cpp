@@ -20,7 +20,6 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <iomanip>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -34,8 +33,6 @@
 #include "std_msgs/msg/u_int8.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include <X11/Xutil.h>
-
-using namespace std::chrono_literals;
 
 namespace
 {
@@ -77,6 +74,7 @@ uint8_t frame_checksum(const std::vector<uint8_t> & frame)
     sum += frame[i];
   return static_cast<uint8_t>(sum & 0xFF);
 }
+
 }  // namespace
 
 static LibSerial::BaudRate baud_from_uint(unsigned int b)
@@ -282,7 +280,7 @@ bool MyArmHardware::wait_for_initial_feedback(std::array<double,6>& q, double ti
         uint8_t lo = buf_local[i + 1 + 2*j];
         uint8_t hi = buf_local[i + 1 + 2*j + 1];
         int16_t raw = static_cast<int16_t>((static_cast<uint16_t>(hi) << 8) | lo);
-        q[j] = static_cast<double>(raw) / pos_scale_;
+        q[j] = arm_joint_signs_[j] * static_cast<double>(raw) / pos_scale_;
       }
       return true;
     }
@@ -323,6 +321,20 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
 
   if (info_.hardware_parameters.count("position_scale"))
     pos_scale_ = std::stod(info_.hardware_parameters.at("position_scale"));
+  if (info_.hardware_parameters.count("arm_joint_signs"))
+  {
+    const auto signs = split_list(info_.hardware_parameters.at("arm_joint_signs"));
+    for (size_t i = 0; i < signs.size() && i < arm_joint_signs_.size(); ++i)
+    {
+      const double sign = std::stod(signs[i]);
+      if (std::abs(sign) <= std::numeric_limits<double>::epsilon())
+      {
+        RCLCPP_WARN(get_logger(), "arm_joint_signs[%zu] is zero; keeping %.1f.", i, arm_joint_signs_[i]);
+        continue;
+      }
+      arm_joint_signs_[i] = sign < 0.0 ? -1.0 : 1.0;
+    }
+  }
 
   if (info_.hardware_parameters.count("hw_slowdown"))
     hw_slowdown_ = std::stod(info_.hardware_parameters.at("hw_slowdown"));
@@ -333,6 +345,8 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
     initial_read_timeout_sec_ = std::stod(info_.hardware_parameters.at("initial_read_timeout_sec"));
   if (info_.hardware_parameters.count("feedback_stale_timeout_sec"))
     feedback_stale_timeout_sec_ = std::stod(info_.hardware_parameters.at("feedback_stale_timeout_sec"));
+  if (info_.hardware_parameters.count("first_power_on"))
+    first_power_on_ = string_to_bool(info_.hardware_parameters.at("first_power_on"));
   if (info_.hardware_parameters.count("aux_joint_min"))
     aux_joint_min_ = std::stod(info_.hardware_parameters.at("aux_joint_min"));
   if (info_.hardware_parameters.count("aux_joint_max"))
@@ -420,8 +434,10 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
   }
 
   RCLCPP_INFO(get_logger(),
-              "Initialized MyArmSystem with %i joints, writer_port=%s, reader_port=%s, baud=%u, scale=%.1f, slowdown=%.1f",
-              static_cast<int>(info_.joints.size()), serial_port_path_.c_str(), reader_port_path_.c_str(), baudrate_, pos_scale_, hw_slowdown_);
+              "Initialized MyArmSystem with %i joints, writer_port=%s, reader_port=%s, baud=%u, scale=%.1f, slowdown=%.1f, first_power_on=%s",
+              static_cast<int>(info_.joints.size()), serial_port_path_.c_str(),
+              reader_port_path_.c_str(), baudrate_, pos_scale_, hw_slowdown_,
+              first_power_on_ ? "true" : "false");
   setup_homing_interface();
 
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -480,10 +496,21 @@ hardware_interface::CallbackReturn MyArmHardware::on_configure(
 
   reset_joint_buffers(0.0);
   rx_buffer_.clear();
-  publish_homing_state(
-    RosMasterHomingState::WAITING_INIT_COMMAND,
-    "Waiting for operator initialization command. Click Initialize Damiao or call "
-    "/arm_homing/start_initialization before enabling the Damiao motors.");
+  sync_commands_on_next_feedback_ = false;
+  if (first_power_on_)
+  {
+    publish_homing_state(
+      RosMasterHomingState::WAITING_INIT_COMMAND,
+      "Waiting for operator initialization command. Click Initialize Damiao or call "
+      "/arm_homing/start_initialization before enabling the Damiao motors.");
+  }
+  else
+  {
+    publish_homing_state(
+      RosMasterHomingState::ALL_READY,
+      "first_power_on is false: skipping ROS-master homing handshake. Motion writes "
+      "will still wait for fresh hardware feedback and sync commands to measured positions.");
+  }
 
   RCLCPP_INFO(get_logger(), "Successfully configured!");
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -645,7 +672,7 @@ hardware_interface::return_type MyArmHardware::read(
         uint8_t lo = rx_buffer_[i + 1 + 2*j];
         uint8_t hi = rx_buffer_[i + 1 + 2*j + 1];
         int16_t raw = static_cast<int16_t>(static_cast<uint16_t>(hi) << 8 | lo);
-        double angle = static_cast<double>(raw) / pos_scale_;
+        double angle = arm_joint_signs_[j] * static_cast<double>(raw) / pos_scale_;
         double prev = hw_states_[j];
         hw_states_[j] = angle;
         hw_velocities_[j] = (hw_states_[j] - prev) / dt;
@@ -743,9 +770,17 @@ hardware_interface::return_type MyArmHardware::write(
     return hardware_interface::return_type::OK;
   }
 
+  enforce_post_homing_command_hold();
+
   if (!can_write_motion_commands())
   {
-    sync_commands_to_states();
+    RosMasterHomingState homing_state;
+    {
+      std::lock_guard<std::mutex> lock(homing_state_mtx_);
+      homing_state = homing_state_;
+    }
+    if (homing_state != RosMasterHomingState::WAITING_ALL_READY)
+      sync_commands_to_states();
     RCLCPP_WARN_THROTTLE(get_logger(), *clock_, 2000,
       "Skipping write(): ROS-master homing has not released motion commands yet.");
     return hardware_interface::return_type::OK;
@@ -799,12 +834,13 @@ hardware_interface::return_type MyArmHardware::write(
     frame[0] = kArmCommandHeader;  // header
     for (size_t i = 0; i < joints_to_send; ++i)
     {
-      long scaled = std::lround(hw_commands_[i] * pos_scale_);
+      const double sign = (i < arm_joint_signs_.size()) ? arm_joint_signs_[i] : 1.0;
+      long scaled = std::lround(sign * hw_commands_[i] * pos_scale_);
       int16_t data16 = clamp_to_i16(scaled);
       frame[1 + 2 * i] = static_cast<uint8_t>(data16 & 0xFF);         // LSB
       frame[1 + 2 * i + 1] = static_cast<uint8_t>((data16 >> 8) & 0xFF); // MSB
       if (i < last_sent_commands_.size())
-        last_sent_commands_[i] = static_cast<double>(data16) / pos_scale_;
+        last_sent_commands_[i] = sign * static_cast<double>(data16) / pos_scale_;
     }
     for (size_t i = joints_to_send; i < last_sent_commands_.size() && i < hw_commands_.size(); ++i)
       last_sent_commands_[i] = hw_commands_[i];
@@ -1385,6 +1421,35 @@ void MyArmHardware::teardown_homing_interface()
   homing_node_.reset();
 }
 
+void MyArmHardware::capture_post_homing_command_hold()
+{
+  std::lock_guard<std::mutex> lock(command_hold_mtx_);
+  post_homing_hold_commands_ = hw_commands_;
+  post_homing_command_hold_active_ = true;
+  RCLCPP_WARN(
+    get_logger(),
+    "Captured command hold for STM32 zeroing window. rqt_joint_trajectory_controller should stay closed until FLAG_ALL_READY.");
+}
+
+void MyArmHardware::finish_post_homing_command_hold()
+{
+  std::lock_guard<std::mutex> lock(command_hold_mtx_);
+  if (post_homing_hold_commands_.size() == hw_commands_.size())
+    std::copy(post_homing_hold_commands_.begin(), post_homing_hold_commands_.end(), hw_commands_.begin());
+  post_homing_command_hold_active_ = false;
+  post_homing_hold_commands_.clear();
+}
+
+void MyArmHardware::enforce_post_homing_command_hold()
+{
+  std::lock_guard<std::mutex> lock(command_hold_mtx_);
+  if (post_homing_command_hold_active_ &&
+      post_homing_hold_commands_.size() == hw_commands_.size())
+  {
+    std::copy(post_homing_hold_commands_.begin(), post_homing_hold_commands_.end(), hw_commands_.begin());
+  }
+}
+
 void MyArmHardware::publish_homing_state(
   RosMasterHomingState state,
   const std::string & message)
@@ -1447,7 +1512,7 @@ bool MyArmHardware::start_damiao_initialization(const std::string & source, std:
   }
   if (state == RosMasterHomingState::WAITING_OPERATOR_DROP_POSE)
   {
-    message = "STM32 already reported FLAG_DAMIAO_READY. Move to the drop pose, then confirm drop pose.";
+    message = "STM32 already reported FLAG_DAMIAO_READY. Move to the drop pose, close rqt_joint_trajectory_controller, then confirm drop pose.";
     return false;
   }
   if (state == RosMasterHomingState::WAITING_ALL_READY)
@@ -1512,10 +1577,12 @@ bool MyArmHardware::confirm_drop_pose(const std::string & source, std::string & 
     return false;
   }
 
+  capture_post_homing_command_hold();
+
   message =
     "FLAG_REACHED_DROP_POSE sent to STM32 from " + source +
     ". The MCU should wait 2 seconds, call cm_motor_set_absolute_zero(), "
-    "then reply with FLAG_ALL_READY.";
+    "then reply with FLAG_ALL_READY. Keep rqt_joint_trajectory_controller closed until homing is complete.";
   publish_homing_state(RosMasterHomingState::WAITING_ALL_READY, message);
   RCLCPP_WARN(get_logger(), "%s", message.c_str());
   return true;
@@ -1530,30 +1597,39 @@ bool MyArmHardware::can_write_motion_commands()
 
 void MyArmHardware::handle_system_event(uint8_t event_code)
 {
+  if (!first_power_on_)
+  {
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *clock_, 2000,
+      "Ignoring STM32 homing system event 0x%02X because first_power_on is false.",
+      event_code);
+    return;
+  }
+
   switch (event_code)
   {
     case kEventDamiaoReady:
       publish_homing_state(
         RosMasterHomingState::WAITING_OPERATOR_DROP_POSE,
-        "STM32 sent FLAG_DAMIAO_READY. Manually move the arm to the drop pose, then click "
-        "Confirm Drop Pose, run "
+        "STM32 sent FLAG_DAMIAO_READY. Move the arm to the drop pose with RQT if needed, "
+        "then close rqt_joint_trajectory_controller before clicking Confirm Drop Pose, run "
         "`ros2 service call /arm_homing/confirm_drop_pose std_srvs/srv/Trigger {}` "
         "or publish std_msgs/msg/Empty to /arm_homing/reached_drop_pose.");
       RCLCPP_WARN(
         get_logger(),
         "STM32 homing handshake: FLAG_DAMIAO_READY received. Move the arm to the drop pose, "
-        "then call `%s` or publish to `%s`.",
+        "close rqt_joint_trajectory_controller, then call `%s` or publish to `%s`.",
         kHomingConfirmService,
         kHomingConfirmTopic);
       break;
 
     case kEventAllReady:
-      sync_commands_to_states();
+      finish_post_homing_command_hold();
       last_sent_commands_ = hw_commands_;
-      sync_commands_on_next_feedback_ = true;
+      sync_commands_on_next_feedback_ = false;
       publish_homing_state(
         RosMasterHomingState::ALL_READY,
-        "STM32 sent FLAG_ALL_READY. Homing is complete and the arm is back in normal operation.");
+        "STM32 sent FLAG_ALL_READY. Homing is complete. Reopen rqt_joint_trajectory_controller if you need more manual motion.");
       RCLCPP_WARN(
         get_logger(),
         "STM32 homing handshake: FLAG_ALL_READY received. Homing is complete.");

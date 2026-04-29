@@ -22,7 +22,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         common_bringup_launch_arguments(
-            default_use_fake_hardware="true",
+            default_use_fake_hardware="false",
             default_start_handeye="true",
         )
         + [bringup_launch]

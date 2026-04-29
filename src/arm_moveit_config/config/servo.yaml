@@ -54,4 +54,3 @@ status_topic: "~/status"
 check_collisions: false
 collision_check_rate: 10.0
 self_collision_proximity_threshold: 0.002   # 2 mm
-self_collision_proximity_threshold: 0.002   # 2 mm
