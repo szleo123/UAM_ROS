@@ -1,0 +1,80 @@
+geomagic_omni_state_adapter:
+  ros__parameters:
+    omni_state_topic: /phantom/state
+    output_pose_topic: /geomagic_touch/pose
+    output_buttons_topic: /geomagic_touch/buttons
+    frame_id: geomagic_touch_base
+    pose_position_scale: 0.001
+    deadman_from_locked: true
+    gripper_from_close_gripper: false
+
+geomagic_cartesian_teleop:
+  ros__parameters:
+    input_pose_topic: /geomagic_touch/pose
+    input_buttons_topic: /geomagic_touch/buttons
+    output_twist_topic: /arm_teleop/raw_twist_cmd
+    status_topic: /arm_teleop/teleop_status
+    command_frame: uav_mount
+    ee_frame_name: tool0
+    publish_rate_hz: 50.0
+    input_timeout_s: 0.25
+    deadman_button_index: 0
+    translation_gain: 10.0
+    translation_deadband_m: 0.00001
+    rotation_gain: 1.0
+    orientation_deadband_rad: 0.00001
+    max_linear_speed_m_s: 0.2
+    max_angular_speed_rad_s: 0.1
+    low_pass_alpha: 0.45
+    orientation_enabled: false
+    robot_axes_from_device: ["x", "y", "z"]
+    robot_angular_axes_from_device: ["x", "y", "z"]
+    zero_on_release: true
+
+teleop_safety_filter:
+  ros__parameters:
+    input_twist_topic: /arm_teleop/raw_twist_cmd
+    output_twist_topic: /arm_teleop/twist_cmd
+    input_buttons_topic: /geomagic_touch/buttons
+    homing_state_topic: /arm_homing/state
+    status_topic: /arm_teleop/safety_status
+    command_frame: uav_mount
+    ee_frame_name: tool0
+    publish_rate_hz: 50.0
+    input_timeout_s: 0.25
+    button_timeout_s: 0.25
+    homing_timeout_s: 2.0
+    deadman_button_index: 0
+    require_deadman: true
+    require_homing: true
+    require_tool_tf: true
+    low_pass_alpha: 0.35
+    max_linear_accel_m_s2: 0.4
+    max_angular_accel_rad_s2: 0.20
+    workspace_min: [-10.0, -10.0, -10.0]
+    workspace_max: [10.0, 10.0, 10.0]
+    max_linear_m_s: 0.2
+    max_angular_rad_s: 0.10
+
+trajectory_deadman_gate:
+  ros__parameters:
+    input_trajectory_topic: /arm_teleop/servo_raw_joint_trajectory
+    output_trajectory_topic: /arm_teleop/dry_run_joint_trajectory
+    input_twist_topic: /arm_teleop/twist_cmd
+    input_buttons_topic: /geomagic_touch/buttons
+    joint_state_topic: /joint_states
+    homing_state_topic: /arm_homing/state
+    status_topic: /arm_teleop/trajectory_gate_status
+    deadman_button_index: 0
+    arm_joints: ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
+    require_deadman: true
+    require_homing: true
+    require_nonzero_twist: true
+    button_timeout_s: 0.25
+    twist_timeout_s: 0.25
+    homing_timeout_s: 2.0
+    min_linear_speed_m_s: 0.00001
+    min_angular_speed_rad_s: 0.0001
+    armed_on_start: false
+    publish_hold_on_block: true
+    hold_duration_s: 0.20
