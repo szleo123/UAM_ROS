@@ -1,0 +1,15 @@
+repositories:
+  src/easy_handeye2:
+    type: git
+    url: https://github.com/marcoesposito1988/easy_handeye2.git
+    version: b42cae604b5c01dbd650fcdac40dbf334cb098f4
+
+  src/geomagic_touch_ros2:
+    type: git
+    url: https://github.com/IvoD1998/Geomagic_Touch_ROS2.git
+    version: 2f39cb3ce92ff3b4c54043cec6d889632918b46d
+
+  src/ros2_aruco:
+    type: git
+    url: https://github.com/JMU-ROBOTICS-VIVA/ros2_aruco.git
+    version: 91813cb3d9f899789d03811943c72d30fa7a8774
