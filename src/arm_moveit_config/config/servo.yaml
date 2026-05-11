@@ -35,12 +35,12 @@ check_octomap_collisions: false
 # --- MoveIt / frames / group ---
 move_group_name: "arm"
 planning_frame: "base_link"             # group planning frame
-robot_link_command_frame: "base_link"   # frame of incoming twists
+robot_link_command_frame: "uav_mount"   # frame of incoming twists
 ee_frame_name: "tool0"                  # your EEF link
 
 # --- Singularities & limits ---
-lower_singularity_threshold: 90.0
-hard_stop_singularity_threshold: 100.0
+lower_singularity_threshold: 40.0
+hard_stop_singularity_threshold: 80.0
 leaving_singularity_threshold_multiplier: 2.0
 joint_limit_margins: [0.01]             # safety margin to joint limits
 
@@ -53,4 +53,4 @@ status_topic: "~/status"
 # --- Collision scaling ---
 check_collisions: false
 collision_check_rate: 10.0
-self_collision_proximity_threshold: 0.002   # 2 mm
+self_collision_proximity_threshold: 0.01  # 1 cm

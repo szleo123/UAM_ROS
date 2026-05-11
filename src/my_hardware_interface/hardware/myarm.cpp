@@ -19,26 +19,31 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
 
+#ifdef MY_ARM_HARDWARE_HAS_PINOCCHIO
+#include <pinocchio/algorithm/joint-configuration.hpp>
+#include <pinocchio/algorithm/rnea.hpp>
+#include <pinocchio/parsers/urdf.hpp>
+#endif
 #include "pluginlib/class_list_macros.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/empty.hpp"
+#include "std_msgs/msg/float64_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_msgs/msg/u_int8.hpp"
 #include "std_srvs/srv/trigger.hpp"
-#include <X11/Xutil.h>
 
 namespace
 {
 constexpr size_t kArmFeedbackJointCount = 6;
 constexpr uint8_t kArmFeedbackHeader = 0xAA;
 constexpr uint8_t kArmCommandHeader = 0xFF;
+constexpr uint8_t kArmPositionTorqueCommandHeader = 0xFE;
 constexpr uint8_t kSystemCommandHeader = 0xEE;
 constexpr size_t kSystemFrameLength = 14;
 constexpr uint8_t kEventDamiaoReady = 0x01;
@@ -46,6 +51,7 @@ constexpr uint8_t kEventAllReady = 0x02;
 constexpr uint8_t kCmdReachedDropPose = 0x01;
 constexpr uint8_t kCmdStartDamiaoInit = 0x10;
 constexpr size_t kArmFrameLength = 14;
+constexpr size_t kArmPositionTorqueFrameLength = 38;
 constexpr double kMinPeriodSec = 1e-6;
 constexpr double kGripperUnitsMin = 60.0;
 constexpr double kGripperUnitsMax = 1390.0;
@@ -224,6 +230,23 @@ static inline std::vector<std::string> split_list(const std::string &csv)
   return entries;
 }
 
+static inline void append_i16_le(std::vector<uint8_t> & frame, int16_t value)
+{
+  frame.push_back(static_cast<uint8_t>(value & 0xFF));
+  frame.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+}
+
+static inline void append_f32_le(std::vector<uint8_t> & frame, float value)
+{
+  uint32_t bits = 0;
+  static_assert(sizeof(bits) == sizeof(value), "float32 packing assumes 32-bit float");
+  std::memcpy(&bits, &value, sizeof(value));
+  frame.push_back(static_cast<uint8_t>(bits & 0xFF));
+  frame.push_back(static_cast<uint8_t>((bits >> 8) & 0xFF));
+  frame.push_back(static_cast<uint8_t>((bits >> 16) & 0xFF));
+  frame.push_back(static_cast<uint8_t>((bits >> 24) & 0xFF));
+}
+
 namespace my_arm_hardware
 {
 bool MyArmHardware::wait_for_initial_feedback(std::array<double,6>& q, double timeout_sec)
@@ -359,48 +382,7 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
   if (info_.hardware_parameters.count("aux_joint_max"))
     aux_joint_max_ = std::stod(info_.hardware_parameters.at("aux_joint_max"));
 
-  if (info_.hardware_parameters.count("enable_feedback_plot"))
-    feedback_plot_enabled_ = string_to_bool(info_.hardware_parameters.at("enable_feedback_plot"));
-
-  if (info_.hardware_parameters.count("feedback_plot_rate_hz"))
-    feedback_plot_rate_hz_ = std::stod(info_.hardware_parameters.at("feedback_plot_rate_hz"));
-  if (feedback_plot_rate_hz_ <= 0.0)
-  {
-    RCLCPP_WARN(get_logger(), "feedback_plot_rate_hz must be > 0. Using default 5 Hz.");
-    feedback_plot_rate_hz_ = 5.0;
-  }
-  
-  if (info_.hardware_parameters.count("feedback_plot_min_rad"))
-    feedback_plot_min_rad_ = std::stod(info_.hardware_parameters.at("feedback_plot_min_rad"));
-  if (info_.hardware_parameters.count("feedback_plot_max_rad"))
-    feedback_plot_max_rad_ = std::stod(info_.hardware_parameters.at("feedback_plot_max_rad"));
-  if (feedback_plot_min_rad_ > feedback_plot_max_rad_)
-    std::swap(feedback_plot_min_rad_, feedback_plot_max_rad_);
-
-  if (info_.hardware_parameters.count("feedback_plot_history_length"))
-  {
-    feedback_plot_history_length_ = static_cast<size_t>(
-      std::max<int64_t>(10, std::stoll(info_.hardware_parameters.at("feedback_plot_history_length"))));
-  }
-  if (info_.hardware_parameters.count("feedback_plot_window_width"))
-  {
-    feedback_plot_width_ = std::max(160, std::stoi(info_.hardware_parameters.at("feedback_plot_window_width")));
-  }
-  if (info_.hardware_parameters.count("feedback_plot_window_height"))
-  {
-    feedback_plot_height_ = std::max(160, std::stoi(info_.hardware_parameters.at("feedback_plot_window_height")));
-  }
-  if (info_.hardware_parameters.count("feedback_plot_joint_filter"))
-    feedback_plot_joint_filter_ = split_list(info_.hardware_parameters.at("feedback_plot_joint_filter"));
-
-  if (info_.hardware_parameters.count("feedback_plot_csv_enabled"))
-    feedback_plot_csv_enabled_ = string_to_bool(info_.hardware_parameters.at("feedback_plot_csv_enabled"));
-
-  if (info_.hardware_parameters.count("feedback_plot_csv_file"))
-    feedback_plot_csv_path_ = info_.hardware_parameters.at("feedback_plot_csv_file");
-
-  if (info_.hardware_parameters.count("feedback_plot_csv_append"))
-    feedback_plot_csv_append_ = string_to_bool(info_.hardware_parameters.at("feedback_plot_csv_append"));
+  parse_dynamics_parameters();
 
   hw_states_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
   hw_commands_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
@@ -429,25 +411,20 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
     }
   }
 
-  update_feedback_plot_selection();
-  if (feedback_plot_enabled_)
-  {
-    RCLCPP_INFO(get_logger(),
-                "Realtime joint feedback monitor enabled (%zu joints @ %.1f Hz, range %.2f..%.2f)",
-                feedback_plot_indices_.size(), feedback_plot_rate_hz_,
-                feedback_plot_min_rad_, feedback_plot_max_rad_);
-    if (feedback_plot_csv_enabled_)
-      ensure_feedback_csv_ready();
-  }
-
   RCLCPP_INFO(get_logger(),
-              "Initialized MyArmSystem with %i joints, writer_port=%s, reader_port=%s, baud=%u, scale=%.1f, slowdown=%.1f, first_power_on=%s, arm_joint_offsets=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
+              "Initialized MyArmSystem with %i joints, writer_port=%s, reader_port=%s, baud=%u, scale=%.1f, slowdown=%.1f, first_power_on=%s, command_frame=%s, dynamics_feedforward=%s, dynamics_mode=%s, arm_joint_offsets=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
               static_cast<int>(info_.joints.size()), serial_port_path_.c_str(),
               reader_port_path_.c_str(), baudrate_, pos_scale_, hw_slowdown_,
               first_power_on_ ? "true" : "false",
+              arm_command_frame_format_ == ArmCommandFrameFormat::POSITION_TORQUE ? "position_torque" : "legacy_position",
+              enable_dynamics_feedforward_ ? "true" : "false",
+              dynamics_mode_ == DynamicsMode::FULL ? "full" :
+                (dynamics_mode_ == DynamicsMode::CORIOLIS ? "coriolis" : "gravity"),
               arm_joint_offsets_[0], arm_joint_offsets_[1], arm_joint_offsets_[2],
               arm_joint_offsets_[3], arm_joint_offsets_[4], arm_joint_offsets_[5]);
   setup_homing_interface();
+  if (enable_dynamics_feedforward_)
+    initialize_dynamics_model();
 
   return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -733,8 +710,6 @@ hardware_interface::return_type MyArmHardware::read(
       }
     }
 
-    if (frame_received)
-      maybe_render_feedback_plot();
   }
 
   if (gripper_ok_) {
@@ -772,7 +747,7 @@ hardware_interface::return_type MyArmHardware::read(
 }
 
 hardware_interface::return_type MyArmHardware::write(
-  const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
+  const rclcpp::Time & /*time*/, const rclcpp::Duration & period)
 {
   if (!serial_ok_ && !gripper_ok_)
   {
@@ -837,32 +812,21 @@ hardware_interface::return_type MyArmHardware::write(
         "Reader not OK; skipping write().");
       return hardware_interface::return_type::OK;
     }
-    // Build frame: 0xFF + 6*int16(le) + checksum
-    // If URDF lists more than 6 joints we’ll send first 6; fewer => pad zeros.
-    const size_t joints_to_send = std::min(arm_joint_count(), kArmFeedbackJointCount);
-    std::vector<uint8_t> frame(kArmFrameLength, 0); // 1+12+1
-    frame[0] = kArmCommandHeader;  // header
-    for (size_t i = 0; i < joints_to_send; ++i)
+    std::array<double, 6> tau_ros_nm{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+    std::array<double, 6> tau_hw_nm{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+    std::vector<uint8_t> frame;
+    if (arm_command_frame_format_ == ArmCommandFrameFormat::POSITION_TORQUE)
     {
-      const double sign = (i < arm_joint_signs_.size()) ? arm_joint_signs_[i] : 1.0;
-      const double offset = (i < arm_joint_offsets_.size()) ? arm_joint_offsets_[i] : 0.0;
-      long scaled = std::lround(sign * (hw_commands_[i] - offset) * pos_scale_);
-      int16_t data16 = clamp_to_i16(scaled);
-      frame[1 + 2 * i] = static_cast<uint8_t>(data16 & 0xFF);         // LSB
-      frame[1 + 2 * i + 1] = static_cast<uint8_t>((data16 >> 8) & 0xFF); // MSB
-      if (i < last_sent_commands_.size())
-        last_sent_commands_[i] = sign * static_cast<double>(data16) / pos_scale_ + offset;
+      tau_ros_nm = compute_dynamics_torques(period);
+      for (size_t i = 0; i < tau_hw_nm.size(); ++i)
+        tau_hw_nm[i] = dynamics_torque_signs_[i] * tau_ros_nm[i];
+      frame = build_position_torque_command_frame(tau_hw_nm);
+      publish_dynamics_torques(tau_ros_nm);
     }
-    for (size_t i = joints_to_send; i < last_sent_commands_.size() && i < hw_commands_.size(); ++i)
-      last_sent_commands_[i] = hw_commands_[i];
-
-
-    // checksum = sum(header + payload) & 0xFF
-    uint8_t sum = 0;
-    for (size_t i = 0; i < kArmFrameLength - 1; i++) {
-      sum += frame[i];
+    else
+    {
+      frame = build_position_command_frame();
     }
-    frame[kArmFrameLength - 1] = sum;
 
     try
     {
@@ -874,6 +838,12 @@ hardware_interface::return_type MyArmHardware::write(
             "Write positions: %.3f %.3f %.3f %.3f %.3f %.3f",
             hw_commands_[0], hw_commands_[1], hw_commands_[2],
             hw_commands_[3], hw_commands_[4], hw_commands_[5]);
+        if (arm_command_frame_format_ == ArmCommandFrameFormat::POSITION_TORQUE) {
+          RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 1000,
+              "Write tau_ff ROS Nm: %.3f %.3f %.3f %.3f %.3f %.3f",
+              tau_ros_nm[0], tau_ros_nm[1], tau_ros_nm[2],
+              tau_ros_nm[3], tau_ros_nm[4], tau_ros_nm[5]);
+        }
       }
     }
     catch (const std::exception & e)
@@ -886,392 +856,11 @@ hardware_interface::return_type MyArmHardware::write(
   return hardware_interface::return_type::OK;
 }
 
-void MyArmHardware::update_feedback_plot_selection()
-{
-  if (feedback_plot_windows_ready_)
-  {
-    if (feedback_display_)
-    {
-      for (size_t i = 0; i < feedback_windows_.size(); ++i)
-      {
-        if (feedback_window_gcs_[i])
-          XFreeGC(feedback_display_, feedback_window_gcs_[i]);
-        if (feedback_windows_[i])
-          XDestroyWindow(feedback_display_, feedback_windows_[i]);
-      }
-      XFlush(feedback_display_);
-    }
-    feedback_plot_windows_ready_ = false;
-    feedback_windows_.clear();
-    feedback_window_gcs_.clear();
-    feedback_plot_window_names_.clear();
-  }
-
-  feedback_plot_indices_.clear();
-  const size_t default_count = std::min<size_t>(6, info_.joints.size());
-
-  if (feedback_plot_joint_filter_.empty())
-  {
-    for (size_t i = 0; i < default_count; ++i)
-      feedback_plot_indices_.push_back(i);
-    return;
-  }
-
-  for (const auto &name : feedback_plot_joint_filter_)
-  {
-    auto it = std::find_if(
-      info_.joints.begin(), info_.joints.end(),
-      [&name](const hardware_interface::ComponentInfo &component) { return component.name == name; });
-    if (it == info_.joints.end())
-    {
-      RCLCPP_WARN(get_logger(),
-                  "feedback_plot_joint_filter entry '%s' does not match any joint; ignoring.",
-                  name.c_str());
-      continue;
-    }
-    feedback_plot_indices_.push_back(static_cast<size_t>(std::distance(info_.joints.begin(), it)));
-  }
-
-  if (feedback_plot_indices_.empty())
-  {
-    for (size_t i = 0; i < default_count; ++i)
-      feedback_plot_indices_.push_back(i);
-  }
-
-  feedback_plot_history_.assign(feedback_plot_indices_.size(), std::vector<double>());
-  feedback_plot_command_history_.assign(feedback_plot_indices_.size(), std::vector<double>());
-  feedback_plot_window_names_.clear();
-}
-
-void MyArmHardware::ensure_feedback_plot_storage()
-{
-  if (feedback_plot_history_.size() != feedback_plot_indices_.size())
-    feedback_plot_history_.assign(feedback_plot_indices_.size(), std::vector<double>());
-  if (feedback_plot_command_history_.size() != feedback_plot_indices_.size())
-    feedback_plot_command_history_.assign(feedback_plot_indices_.size(), std::vector<double>());
-}
-
-void MyArmHardware::ensure_feedback_windows_created()
-{
-  if (feedback_plot_windows_ready_ || feedback_display_failed_ || feedback_plot_indices_.empty())
-    return;
-
-  static std::once_flag x11_init_flag;
-  std::call_once(x11_init_flag, []() { XInitThreads(); });
-
-  if (!feedback_display_)
-  {
-    feedback_display_ = XOpenDisplay(nullptr);
-    if (!feedback_display_)
-    {
-      RCLCPP_ERROR(get_logger(), "Failed to open X11 display. Realtime joint plots disabled.");
-      feedback_display_failed_ = true;
-      return;
-    }
-    feedback_screen_ = DefaultScreen(feedback_display_);
-
-    auto alloc_color = [&](int r, int g, int b) -> unsigned long {
-      XColor color;
-      color.red = static_cast<unsigned short>(std::clamp(r, 0, 255) * 257);
-      color.green = static_cast<unsigned short>(std::clamp(g, 0, 255) * 257);
-      color.blue = static_cast<unsigned short>(std::clamp(b, 0, 255) * 257);
-      color.flags = DoRed | DoGreen | DoBlue;
-      if (!XAllocColor(feedback_display_, DefaultColormap(feedback_display_, feedback_screen_), &color))
-        return BlackPixel(feedback_display_, feedback_screen_);
-      return color.pixel;
-    };
-
-    feedback_color_bg_ = alloc_color(16, 16, 16);
-    feedback_color_grid_ = alloc_color(80, 80, 80);
-    feedback_color_line_ = alloc_color(0, 185, 255);
-    feedback_color_cmd_line_ = alloc_color(255, 140, 0);
-    feedback_color_text_ = alloc_color(255, 255, 255);
-  }
-
-  feedback_plot_windows_ready_ = false;
-  feedback_plot_window_names_.clear();
-  feedback_windows_.clear();
-  feedback_window_gcs_.clear();
-
-  const int columns = static_cast<int>(std::ceil(std::sqrt(static_cast<double>(feedback_plot_indices_.size()))));
-  for (size_t slot = 0; slot < feedback_plot_indices_.size(); ++slot)
-  {
-    const size_t idx = feedback_plot_indices_[slot];
-    const int col = (columns <= 0) ? 0 : static_cast<int>(slot % columns);
-    const int row = (columns <= 0) ? 0 : static_cast<int>(slot / columns);
-    const int x = 60 + col * (feedback_plot_width_ + 40);
-    const int y = 60 + row * (feedback_plot_height_ + 80);
-
-    std::string window_name = "Joint feedback - " +
-      ((idx < info_.joints.size()) ? info_.joints[idx].name : ("joint" + std::to_string(idx)));
-
-    Window win = XCreateSimpleWindow(
-      feedback_display_, RootWindow(feedback_display_, feedback_screen_),
-      x, y, static_cast<unsigned int>(feedback_plot_width_),
-      static_cast<unsigned int>(feedback_plot_height_), 0,
-      feedback_color_line_, feedback_color_bg_);
-    XStoreName(feedback_display_, win, window_name.c_str());
-    XSelectInput(feedback_display_, win, ExposureMask | StructureNotifyMask);
-    XMapWindow(feedback_display_, win);
-
-    GC gc = XCreateGC(feedback_display_, win, 0, nullptr);
-    XSetForeground(feedback_display_, gc, feedback_color_line_);
-    XSetBackground(feedback_display_, gc, feedback_color_bg_);
-
-    feedback_windows_.push_back(win);
-    feedback_window_gcs_.push_back(gc);
-    feedback_plot_window_names_.push_back(window_name);
-  }
-
-  XFlush(feedback_display_);
-  feedback_plot_windows_ready_ = !feedback_windows_.empty();
-}
-
-void MyArmHardware::render_joint_plot(size_t slot, size_t joint_idx)
-{
-  if (slot >= feedback_plot_history_.size() ||
-      slot >= feedback_windows_.size() ||
-      slot >= feedback_window_gcs_.size() ||
-      !feedback_display_)
-    return;
-
-  auto &history = feedback_plot_history_[slot];
-  auto &command_history = feedback_plot_command_history_[slot];
-  const double lo = feedback_plot_min_rad_;
-  const double hi = feedback_plot_max_rad_;
-  const double span = std::max(1e-6, hi - lo);
-
-  Window win = feedback_windows_[slot];
-  GC gc = feedback_window_gcs_[slot];
-
-  XSetForeground(feedback_display_, gc, feedback_color_bg_);
-  XFillRectangle(feedback_display_, win, gc, 0, 0,
-                 static_cast<unsigned int>(feedback_plot_width_),
-                 static_cast<unsigned int>(feedback_plot_height_));
-
-  if (lo < 0.0 && hi > 0.0)
-  {
-    const double zero_ratio = (0.0 - lo) / span;
-    const int zero_y = feedback_plot_height_ - 1 -
-      static_cast<int>(zero_ratio * (feedback_plot_height_ - 1));
-    XSetForeground(feedback_display_, gc, feedback_color_grid_);
-    XDrawLine(feedback_display_, win, gc, 0, zero_y,
-              feedback_plot_width_ - 1, zero_y);
-  }
-
-  if (history.size() >= 2)
-  {
-    std::vector<XPoint> points(history.size());
-    for (size_t i = 0; i < history.size(); ++i)
-    {
-      const double x_ratio = static_cast<double>(i) / (history.size() - 1);
-      const int x = static_cast<int>(x_ratio * (feedback_plot_width_ - 1));
-      const double val = std::clamp(history[i], lo, hi);
-      const double y_ratio = (val - lo) / span;
-      const int y = feedback_plot_height_ - 1 -
-        static_cast<int>(y_ratio * (feedback_plot_height_ - 1));
-      points[i].x = static_cast<short>(x);
-      points[i].y = static_cast<short>(y);
-    }
-    XSetForeground(feedback_display_, gc, feedback_color_line_);
-    XDrawLines(feedback_display_, win, gc, points.data(),
-               static_cast<int>(points.size()), CoordModeOrigin);
-  }
-  if (command_history.size() >= 2)
-  {
-    std::vector<XPoint> cmd_points(command_history.size());
-    for (size_t i = 0; i < command_history.size(); ++i)
-    {
-      const double x_ratio = static_cast<double>(i) / (command_history.size() - 1);
-      const int x = static_cast<int>(x_ratio * (feedback_plot_width_ - 1));
-      const double val = std::clamp(command_history[i], lo, hi);
-      const double y_ratio = (val - lo) / span;
-      const int y = feedback_plot_height_ - 1 -
-        static_cast<int>(y_ratio * (feedback_plot_height_ - 1));
-      cmd_points[i].x = static_cast<short>(x);
-      cmd_points[i].y = static_cast<short>(y);
-    }
-    XSetForeground(feedback_display_, gc, feedback_color_cmd_line_);
-    XDrawLines(feedback_display_, win, gc, cmd_points.data(),
-               static_cast<int>(cmd_points.size()), CoordModeOrigin);
-  }
-  else
-  {
-    const char *msg = "Waiting for samples...";
-    XSetForeground(feedback_display_, gc, feedback_color_text_);
-    XDrawString(feedback_display_, win, gc, 20, feedback_plot_height_ / 2, msg,
-                static_cast<int>(std::strlen(msg)));
-  }
-
-  XSetForeground(feedback_display_, gc, feedback_color_text_);
-  char label[128];
-  const std::string joint_name =
-    (joint_idx < info_.joints.size()) ? info_.joints[joint_idx].name
-                                      : ("joint" + std::to_string(joint_idx));
-  const double cmd_display =
-    (joint_idx < last_sent_commands_.size()) ? last_sent_commands_[joint_idx]
-                                             : ((joint_idx < hw_commands_.size())
-                                                  ? hw_commands_[joint_idx]
-                                                  : hw_states_[joint_idx]);
-  const double fb_display = (joint_idx < hw_states_.size()) ? hw_states_[joint_idx] : 0.0;
-  std::snprintf(label, sizeof(label), "%s fb=%.3f rad cmd=%.3f rad",
-                joint_name.c_str(), fb_display, cmd_display);
-  XDrawString(feedback_display_, win, gc, 10, 20,
-              label, static_cast<int>(std::strlen(label)));
-}
-
-void MyArmHardware::ensure_feedback_csv_ready()
-{
-  if (!feedback_plot_csv_enabled_)
-    return;
-
-  std::lock_guard<std::mutex> lock(feedback_plot_csv_mutex_);
-  if (feedback_plot_csv_stream_.is_open())
-    return;
-
-  bool file_has_data = false;
-  if (feedback_plot_csv_append_)
-  {
-    std::ifstream existing(feedback_plot_csv_path_, std::ios::binary | std::ios::ate);
-    file_has_data = existing && existing.tellg() > 0;
-  }
-
-  std::ios_base::openmode mode = std::ios::out;
-  mode |= feedback_plot_csv_append_ ? std::ios::app : std::ios::trunc;
-  feedback_plot_csv_stream_.open(feedback_plot_csv_path_, mode);
-  if (!feedback_plot_csv_stream_)
-  {
-    RCLCPP_ERROR(get_logger(), "Failed to open feedback CSV file '%s'. Disabling CSV logging.",
-                 feedback_plot_csv_path_.c_str());
-    feedback_plot_csv_enabled_ = false;
-    return;
-  }
-
-  if (!file_has_data)
-  {
-    feedback_plot_csv_stream_ << "timestamp_sec,joint_name,feedback_rad,command_rad\n";
-    feedback_plot_csv_stream_.flush();
-  }
-}
-
-void MyArmHardware::log_feedback_csv(size_t joint_idx, double stamp_sec, double feedback, double command)
-{
-  if (!feedback_plot_csv_enabled_)
-    return;
-
-  std::lock_guard<std::mutex> lock(feedback_plot_csv_mutex_);
-  if (!feedback_plot_csv_stream_.is_open())
-    return;
-
-  std::string joint_name =
-    (joint_idx < info_.joints.size()) ? info_.joints[joint_idx].name
-                                      : ("joint" + std::to_string(joint_idx));
-
-  feedback_plot_csv_stream_ << std::fixed << std::setprecision(6)
-                            << stamp_sec << ","
-                            << joint_name << ","
-                            << feedback << ","
-                            << command << "\n";
-  feedback_plot_csv_stream_.flush();
-}
-
-void MyArmHardware::close_feedback_csv()
-{
-  std::lock_guard<std::mutex> lock(feedback_plot_csv_mutex_);
-  if (feedback_plot_csv_stream_.is_open())
-    feedback_plot_csv_stream_.close();
-}
-
-void MyArmHardware::maybe_render_feedback_plot()
-{
-  if (!feedback_plot_enabled_ || feedback_plot_indices_.empty() || feedback_display_failed_)
-    return;
-
-  const double min_interval = 1.0 / feedback_plot_rate_hz_;
-  const auto now = get_clock()->now();
-  if (feedback_plot_last_render_.nanoseconds() != 0)
-  {
-    const double elapsed = (now - feedback_plot_last_render_).seconds();
-    if (elapsed < min_interval)
-      return;
-  }
-  feedback_plot_last_render_ = now;
-  const double stamp_sec = now.seconds();
-
-  ensure_feedback_plot_storage();
-  ensure_feedback_windows_created();
-  if (!feedback_plot_windows_ready_)
-    return;
-
-  if (feedback_plot_csv_enabled_)
-    ensure_feedback_csv_ready();
-
-  const size_t max_len = std::max<size_t>(10, feedback_plot_history_length_);
-  for (size_t slot = 0; slot < feedback_plot_indices_.size(); ++slot)
-  {
-    size_t joint_idx = feedback_plot_indices_[slot];
-    if (joint_idx >= hw_states_.size())
-      continue;
-    const double pos = hw_states_[joint_idx];
-    if (!std::isfinite(pos))
-      continue;
-
-    auto &history = feedback_plot_history_[slot];
-    history.push_back(pos);
-    if (history.size() > max_len)
-    {
-      const auto remove_count =
-        static_cast<std::vector<double>::difference_type>(history.size() - max_len);
-      history.erase(history.begin(), history.begin() + remove_count);
-    }
-
-    double cmd = pos;
-    if (joint_idx < last_sent_commands_.size() && std::isfinite(last_sent_commands_[joint_idx]))
-      cmd = last_sent_commands_[joint_idx];
-    else if (joint_idx < hw_commands_.size() && std::isfinite(hw_commands_[joint_idx]))
-      cmd = hw_commands_[joint_idx];
-    auto &cmd_history = feedback_plot_command_history_[slot];
-    cmd_history.push_back(cmd);
-    if (cmd_history.size() > max_len)
-    {
-      const auto remove_count =
-        static_cast<std::vector<double>::difference_type>(cmd_history.size() - max_len);
-      cmd_history.erase(cmd_history.begin(), cmd_history.begin() + remove_count);
-    }
-
-    render_joint_plot(slot, joint_idx);
-    log_feedback_csv(joint_idx, stamp_sec, pos, cmd);
-  }
-
-  if (feedback_display_)
-    XFlush(feedback_display_);
-}
-
 hardware_interface::CallbackReturn
 MyArmHardware::on_cleanup(const rclcpp_lifecycle::State & /*previous_state*/)
 {
   RCLCPP_INFO(get_logger(), "Cleaning up (de-configure) ...");
 
-  if (feedback_plot_windows_ready_ || feedback_display_)
-  {
-    if (feedback_display_)
-    {
-      for (GC gc : feedback_window_gcs_)
-        XFreeGC(feedback_display_, gc);
-      for (Window win : feedback_windows_)
-        XDestroyWindow(feedback_display_, win);
-      XFlush(feedback_display_);
-      XCloseDisplay(feedback_display_);
-    }
-    feedback_display_ = nullptr;
-    feedback_windows_.clear();
-    feedback_window_gcs_.clear();
-    feedback_plot_window_names_.clear();
-    feedback_plot_history_.clear();
-    feedback_plot_windows_ready_ = false;
-    feedback_display_failed_ = false;
-  }
-  close_feedback_csv();
   teardown_homing_interface();
 
   // Close writer port
@@ -1348,6 +937,359 @@ size_t MyArmHardware::aux_joint_index() const
   return info_.joints.empty() ? 0 : info_.joints.size() - 1;
 }
 
+void MyArmHardware::parse_dynamics_parameters()
+{
+  if (info_.hardware_parameters.count("arm_command_frame_format"))
+  {
+    const std::string format = trim_copy(info_.hardware_parameters.at("arm_command_frame_format"));
+    if (format == "position_torque" || format == "extended_position_torque")
+      arm_command_frame_format_ = ArmCommandFrameFormat::POSITION_TORQUE;
+    else if (format == "legacy_position" || format == "position")
+      arm_command_frame_format_ = ArmCommandFrameFormat::LEGACY_POSITION;
+    else
+      RCLCPP_WARN(get_logger(), "Unknown arm_command_frame_format '%s'; using legacy_position.", format.c_str());
+  }
+
+  if (info_.hardware_parameters.count("enable_dynamics_feedforward"))
+    enable_dynamics_feedforward_ = string_to_bool(info_.hardware_parameters.at("enable_dynamics_feedforward"));
+
+  if (info_.hardware_parameters.count("dynamics_mode"))
+  {
+    const std::string mode = trim_copy(info_.hardware_parameters.at("dynamics_mode"));
+    if (mode == "full")
+      dynamics_mode_ = DynamicsMode::FULL;
+    else if (mode == "coriolis")
+      dynamics_mode_ = DynamicsMode::CORIOLIS;
+    else if (mode == "gravity")
+      dynamics_mode_ = DynamicsMode::GRAVITY;
+    else
+      RCLCPP_WARN(get_logger(), "Unknown dynamics_mode '%s'; using gravity.", mode.c_str());
+  }
+
+  if (info_.hardware_parameters.count("dynamics_urdf_path"))
+    dynamics_urdf_path_ = trim_copy(info_.hardware_parameters.at("dynamics_urdf_path"));
+  if (info_.hardware_parameters.count("dynamics_feedforward_source"))
+    dynamics_feedforward_source_ =
+      trim_copy(info_.hardware_parameters.at("dynamics_feedforward_source"));
+  if (info_.hardware_parameters.count("dynamics_feedforward_topic"))
+    dynamics_feedforward_topic_ =
+      trim_copy(info_.hardware_parameters.at("dynamics_feedforward_topic"));
+  if (info_.hardware_parameters.count("dynamics_topic_timeout_sec"))
+    dynamics_topic_timeout_sec_ =
+      std::max(0.01, std::stod(info_.hardware_parameters.at("dynamics_topic_timeout_sec")));
+  if (info_.hardware_parameters.count("dynamics_use_commanded_position"))
+    dynamics_use_commanded_position_ =
+      string_to_bool(info_.hardware_parameters.at("dynamics_use_commanded_position"));
+  if (info_.hardware_parameters.count("dynamics_torque_scale"))
+    dynamics_torque_scale_ = std::stod(info_.hardware_parameters.at("dynamics_torque_scale"));
+  if (info_.hardware_parameters.count("dynamics_torque_low_pass_alpha"))
+    dynamics_torque_low_pass_alpha_ =
+      std::stod(info_.hardware_parameters.at("dynamics_torque_low_pass_alpha"));
+  dynamics_torque_low_pass_alpha_ = std::clamp(dynamics_torque_low_pass_alpha_, 0.0, 1.0);
+
+  if (info_.hardware_parameters.count("dynamics_torque_limits_nm"))
+  {
+    const auto values = split_list(info_.hardware_parameters.at("dynamics_torque_limits_nm"));
+    for (size_t i = 0; i < values.size() && i < dynamics_torque_limits_nm_.size(); ++i)
+      dynamics_torque_limits_nm_[i] = std::max(0.0, std::stod(values[i]));
+  }
+
+  dynamics_torque_signs_ = arm_joint_signs_;
+  if (info_.hardware_parameters.count("dynamics_torque_joint_signs"))
+  {
+    const auto signs = split_list(info_.hardware_parameters.at("dynamics_torque_joint_signs"));
+    for (size_t i = 0; i < signs.size() && i < dynamics_torque_signs_.size(); ++i)
+    {
+      const double sign = std::stod(signs[i]);
+      if (std::abs(sign) <= std::numeric_limits<double>::epsilon())
+      {
+        RCLCPP_WARN(get_logger(), "dynamics_torque_joint_signs[%zu] is zero; keeping %.1f.",
+                    i, dynamics_torque_signs_[i]);
+        continue;
+      }
+      dynamics_torque_signs_[i] = sign < 0.0 ? -1.0 : 1.0;
+    }
+  }
+
+  if (enable_dynamics_feedforward_ &&
+      arm_command_frame_format_ != ArmCommandFrameFormat::POSITION_TORQUE)
+  {
+    RCLCPP_WARN(
+      get_logger(),
+      "enable_dynamics_feedforward=true but arm_command_frame_format is legacy_position. "
+      "Torque has nowhere to go, so dynamics feedforward is disabled.");
+    enable_dynamics_feedforward_ = false;
+  }
+
+  if (dynamics_feedforward_source_ != "topic" &&
+      dynamics_feedforward_source_ != "internal_pinocchio")
+  {
+    RCLCPP_WARN(
+      get_logger(),
+      "Unknown dynamics_feedforward_source '%s'; using topic.",
+      dynamics_feedforward_source_.c_str());
+    dynamics_feedforward_source_ = "topic";
+  }
+}
+
+void MyArmHardware::initialize_dynamics_model()
+{
+  dynamics_model_ready_ = false;
+  if (dynamics_feedforward_source_ != "internal_pinocchio")
+    return;
+#ifdef MY_ARM_HARDWARE_HAS_PINOCCHIO
+  try
+  {
+    if (!dynamics_urdf_path_.empty())
+      pinocchio::urdf::buildModel(dynamics_urdf_path_, dynamics_model_);
+    else if (!info_.original_xml.empty())
+      pinocchio::urdf::buildModelFromXML(info_.original_xml, dynamics_model_);
+    else
+    {
+      RCLCPP_WARN(get_logger(), "No URDF XML/path available for Pinocchio dynamics.");
+      return;
+    }
+
+    dynamics_data_ = std::make_unique<pinocchio::Data>(dynamics_model_);
+    for (size_t i = 0; i < dynamics_joint_q_indices_.size(); ++i)
+    {
+      if (i >= info_.joints.size())
+        break;
+      const std::string & joint_name = info_.joints[i].name;
+      if (!dynamics_model_.existJointName(joint_name))
+      {
+        RCLCPP_WARN(get_logger(), "Pinocchio model does not contain arm joint '%s'.", joint_name.c_str());
+        return;
+      }
+      const auto joint_id = dynamics_model_.getJointId(joint_name);
+      if (dynamics_model_.nqs[joint_id] != 1 || dynamics_model_.nvs[joint_id] != 1)
+      {
+        RCLCPP_WARN(
+          get_logger(),
+          "Pinocchio joint '%s' is not a 1-DoF joint (nq=%d, nv=%d).",
+          joint_name.c_str(), dynamics_model_.nqs[joint_id], dynamics_model_.nvs[joint_id]);
+        return;
+      }
+      dynamics_joint_q_indices_[i] = dynamics_model_.idx_qs[joint_id];
+      dynamics_joint_v_indices_[i] = dynamics_model_.idx_vs[joint_id];
+    }
+
+    dynamics_model_ready_ = true;
+    RCLCPP_WARN(
+      get_logger(),
+      "Pinocchio dynamics model loaded. Feedforward enabled=%s, frame_format=%s. "
+      "Verify URDF inertials before applying nonzero torque on hardware.",
+      enable_dynamics_feedforward_ ? "true" : "false",
+      arm_command_frame_format_ == ArmCommandFrameFormat::POSITION_TORQUE ?
+        "position_torque" : "legacy_position");
+  }
+  catch (const std::exception & e)
+  {
+    dynamics_model_ready_ = false;
+    RCLCPP_ERROR(get_logger(), "Failed to initialize Pinocchio dynamics model: %s", e.what());
+  }
+#else
+  if (enable_dynamics_feedforward_)
+  {
+    RCLCPP_ERROR(
+      get_logger(),
+      "Dynamics feedforward was requested, but my_arm_hardware was built without Pinocchio. "
+      "Extended frames will carry zero torque until Pinocchio is installed and the package is rebuilt.");
+  }
+#endif
+}
+
+std::array<double, 6> MyArmHardware::compute_dynamics_torques(const rclcpp::Duration & period)
+{
+  (void)period;
+  std::array<double, 6> tau_ros_nm{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+  if (!enable_dynamics_feedforward_)
+    return tau_ros_nm;
+
+  if (dynamics_feedforward_source_ == "topic")
+  {
+    const double age =
+      dynamics_topic_last_time_.nanoseconds() > 0 ?
+      (get_clock()->now() - dynamics_topic_last_time_).seconds() :
+      std::numeric_limits<double>::infinity();
+    if (age > dynamics_topic_timeout_sec_)
+    {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *clock_, 1000,
+        "Dynamics torque topic '%s' is stale/unavailable (age %.3fs); sending zero torque.",
+        dynamics_feedforward_topic_.c_str(), age);
+      return tau_ros_nm;
+    }
+    for (size_t i = 0; i < tau_ros_nm.size(); ++i)
+    {
+      const double limit = dynamics_torque_limits_nm_[i];
+      tau_ros_nm[i] = std::clamp(dynamics_topic_tau_ros_nm_[i], -limit, limit);
+    }
+    return tau_ros_nm;
+  }
+
+#ifdef MY_ARM_HARDWARE_HAS_PINOCCHIO
+  if (!dynamics_model_ready_ || !dynamics_data_)
+  {
+    if (!dynamics_warned_unavailable_)
+    {
+      RCLCPP_WARN(get_logger(), "Dynamics feedforward requested but Pinocchio model is not ready; sending zero torque.");
+      dynamics_warned_unavailable_ = true;
+    }
+    return tau_ros_nm;
+  }
+
+  try
+  {
+    const double dt = safe_period_seconds(period);
+    Eigen::VectorXd q = pinocchio::neutral(dynamics_model_);
+    Eigen::VectorXd v = Eigen::VectorXd::Zero(dynamics_model_.nv);
+    Eigen::VectorXd a = Eigen::VectorXd::Zero(dynamics_model_.nv);
+
+    const size_t joints = std::min(arm_joint_count(), kArmFeedbackJointCount);
+    for (size_t i = 0; i < joints; ++i)
+    {
+      const int q_index = dynamics_joint_q_indices_[i];
+      const int v_index = dynamics_joint_v_indices_[i];
+      if (q_index < 0 || v_index < 0)
+        continue;
+
+      const double position =
+        dynamics_use_commanded_position_ && i < hw_commands_.size() && std::isfinite(hw_commands_[i]) ?
+        hw_commands_[i] : hw_states_[i];
+      q[q_index] = std::isfinite(position) ? position : 0.0;
+
+      if (dynamics_mode_ == DynamicsMode::CORIOLIS)
+      {
+        const double velocity = i < hw_velocities_.size() && std::isfinite(hw_velocities_[i]) ?
+          hw_velocities_[i] : 0.0;
+        v[v_index] = velocity;
+      }
+      else if (dynamics_mode_ == DynamicsMode::FULL)
+      {
+        const double command = i < hw_commands_.size() && std::isfinite(hw_commands_[i]) ? hw_commands_[i] : q[q_index];
+        if (!dynamics_command_history_ready_)
+        {
+          dynamics_last_commands_[i] = command;
+          dynamics_last_command_velocities_[i] = 0.0;
+        }
+        const double cmd_velocity = (command - dynamics_last_commands_[i]) / dt;
+        const double cmd_accel = (cmd_velocity - dynamics_last_command_velocities_[i]) / dt;
+        v[v_index] = cmd_velocity;
+        a[v_index] = cmd_accel;
+        dynamics_last_commands_[i] = command;
+        dynamics_last_command_velocities_[i] = cmd_velocity;
+      }
+    }
+    dynamics_command_history_ready_ = true;
+
+    const Eigen::VectorXd tau = pinocchio::rnea(dynamics_model_, *dynamics_data_, q, v, a);
+    for (size_t i = 0; i < joints; ++i)
+    {
+      const int v_index = dynamics_joint_v_indices_[i];
+      if (v_index < 0)
+        continue;
+      double target = tau[v_index] * dynamics_torque_scale_;
+      if (!std::isfinite(target))
+      {
+        RCLCPP_WARN_THROTTLE(get_logger(), *clock_, 1000,
+          "Pinocchio returned non-finite torque for joint %zu; forcing zero.", i + 1);
+        target = 0.0;
+      }
+
+      const double limit = dynamics_torque_limits_nm_[i];
+      target = std::clamp(target, -limit, limit);
+      if (dynamics_torque_low_pass_alpha_ <= 0.0)
+        target = dynamics_last_tau_ros_nm_[i];
+      else if (dynamics_torque_low_pass_alpha_ < 1.0)
+        target = dynamics_last_tau_ros_nm_[i] +
+          dynamics_torque_low_pass_alpha_ * (target - dynamics_last_tau_ros_nm_[i]);
+
+      dynamics_last_tau_ros_nm_[i] = target;
+      tau_ros_nm[i] = target;
+    }
+  }
+  catch (const std::exception & e)
+  {
+    RCLCPP_ERROR_THROTTLE(get_logger(), *clock_, 1000,
+      "Pinocchio torque computation failed: %s. Sending zero torque.", e.what());
+    tau_ros_nm.fill(0.0);
+  }
+#else
+  if (!dynamics_warned_unavailable_)
+  {
+    RCLCPP_WARN(get_logger(), "Dynamics feedforward requested but Pinocchio support is not compiled in; sending zero torque.");
+    dynamics_warned_unavailable_ = true;
+  }
+#endif
+  return tau_ros_nm;
+}
+
+void MyArmHardware::publish_dynamics_torques(const std::array<double, 6> & tau_ros_nm)
+{
+  if (!dynamics_tau_pub_)
+    return;
+  std_msgs::msg::Float64MultiArray msg;
+  msg.data.assign(tau_ros_nm.begin(), tau_ros_nm.end());
+  dynamics_tau_pub_->publish(msg);
+}
+
+std::vector<uint8_t> MyArmHardware::build_position_command_frame()
+{
+  const size_t joints_to_send = std::min(arm_joint_count(), kArmFeedbackJointCount);
+  std::vector<uint8_t> frame(kArmFrameLength, 0);
+  frame[0] = kArmCommandHeader;
+  for (size_t i = 0; i < joints_to_send; ++i)
+  {
+    const double sign = (i < arm_joint_signs_.size()) ? arm_joint_signs_[i] : 1.0;
+    const double offset = (i < arm_joint_offsets_.size()) ? arm_joint_offsets_[i] : 0.0;
+    long scaled = std::lround(sign * (hw_commands_[i] - offset) * pos_scale_);
+    int16_t data16 = clamp_to_i16(scaled);
+    frame[1 + 2 * i] = static_cast<uint8_t>(data16 & 0xFF);
+    frame[1 + 2 * i + 1] = static_cast<uint8_t>((data16 >> 8) & 0xFF);
+    if (i < last_sent_commands_.size())
+      last_sent_commands_[i] = sign * static_cast<double>(data16) / pos_scale_ + offset;
+  }
+  for (size_t i = joints_to_send; i < last_sent_commands_.size() && i < hw_commands_.size(); ++i)
+    last_sent_commands_[i] = hw_commands_[i];
+  frame.back() = frame_checksum(frame);
+  return frame;
+}
+
+std::vector<uint8_t> MyArmHardware::build_position_torque_command_frame(
+  const std::array<double, 6> & tau_hw_nm)
+{
+  const size_t joints_to_send = std::min(arm_joint_count(), kArmFeedbackJointCount);
+  std::vector<uint8_t> frame;
+  frame.reserve(kArmPositionTorqueFrameLength);
+  frame.push_back(kArmPositionTorqueCommandHeader);
+  for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+  {
+    int16_t data16 = 0;
+    if (i < joints_to_send)
+    {
+      const double sign = (i < arm_joint_signs_.size()) ? arm_joint_signs_[i] : 1.0;
+      const double offset = (i < arm_joint_offsets_.size()) ? arm_joint_offsets_[i] : 0.0;
+      long scaled = std::lround(sign * (hw_commands_[i] - offset) * pos_scale_);
+      data16 = clamp_to_i16(scaled);
+      if (i < last_sent_commands_.size())
+        last_sent_commands_[i] = sign * static_cast<double>(data16) / pos_scale_ + offset;
+    }
+    append_i16_le(frame, data16);
+  }
+  for (size_t i = joints_to_send; i < last_sent_commands_.size() && i < hw_commands_.size(); ++i)
+    last_sent_commands_[i] = hw_commands_[i];
+
+  for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+  {
+    const float tau = static_cast<float>(std::isfinite(tau_hw_nm[i]) ? tau_hw_nm[i] : 0.0);
+    append_f32_le(frame, tau);
+  }
+  frame.push_back(0);
+  frame.back() = frame_checksum(frame);
+  return frame;
+}
+
 void MyArmHardware::setup_homing_interface()
 {
   if (homing_node_)
@@ -1360,6 +1302,23 @@ void MyArmHardware::setup_homing_interface()
     kHomingStatusTopic, latched_qos);
   homing_state_pub_ = homing_node_->create_publisher<std_msgs::msg::UInt8>(
     kHomingStateTopic, latched_qos);
+  dynamics_tau_pub_ = homing_node_->create_publisher<std_msgs::msg::Float64MultiArray>(
+    "/my_arm_system/dynamics_tau_ff_nm", rclcpp::QoS(10));
+  dynamics_tau_sub_ = homing_node_->create_subscription<std_msgs::msg::Float64MultiArray>(
+    dynamics_feedforward_topic_,
+    rclcpp::QoS(10),
+    [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg)
+    {
+      const size_t count = std::min(msg->data.size(), dynamics_topic_tau_ros_nm_.size());
+      for (size_t i = 0; i < count; ++i)
+      {
+        dynamics_topic_tau_ros_nm_[i] =
+          std::isfinite(msg->data[i]) ? msg->data[i] : 0.0;
+      }
+      for (size_t i = count; i < dynamics_topic_tau_ros_nm_.size(); ++i)
+        dynamics_topic_tau_ros_nm_[i] = 0.0;
+      dynamics_topic_last_time_ = get_clock()->now();
+    });
 
   homing_init_srv_ = homing_node_->create_service<std_srvs::srv::Trigger>(
     kHomingInitService,
@@ -1428,6 +1387,8 @@ void MyArmHardware::teardown_homing_interface()
   homing_drop_pose_sub_.reset();
   homing_status_pub_.reset();
   homing_state_pub_.reset();
+  dynamics_tau_pub_.reset();
+  dynamics_tau_sub_.reset();
   homing_executor_.reset();
   homing_node_.reset();
 }

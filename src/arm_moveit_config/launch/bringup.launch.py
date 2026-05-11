@@ -144,6 +144,49 @@ def generate_launch_description():
         ),
     )
 
+    dynamics_monitor = Node(
+        package="my_arm_hardware",
+        executable="dynamics_monitor.py",
+        name="arm_dynamics_monitor",
+        output="screen",
+        parameters=[
+            moveit_config.robot_description,
+            {
+                "joint_names": "joint_1,joint_2,joint_3,joint_4,joint_5,joint_6",
+                "rate_hz": LaunchConfiguration("dynamics_monitor_rate_hz"),
+                "mode": LaunchConfiguration("dynamics_monitor_mode"),
+                "torque_scale": LaunchConfiguration("dynamics_torque_scale"),
+                "torque_limits_nm": LaunchConfiguration("dynamics_torque_limits_nm"),
+                "low_pass_alpha": LaunchConfiguration("dynamics_torque_low_pass_alpha"),
+                "enable_plot": LaunchConfiguration("dynamics_monitor_plot"),
+                "plot_history_sec": LaunchConfiguration("dynamics_monitor_plot_history_sec"),
+            },
+        ],
+        condition=IfCondition(LaunchConfiguration("start_dynamics_monitor")),
+    )
+
+    joint_feedback_monitor = Node(
+        package="my_arm_hardware",
+        executable="joint_feedback_monitor.py",
+        name="joint_feedback_monitor",
+        output="screen",
+        parameters=[
+            {
+                "joint_names": LaunchConfiguration("joint_feedback_monitor_joints"),
+                "rate_hz": LaunchConfiguration("joint_feedback_monitor_rate_hz"),
+                "plot": LaunchConfiguration("joint_feedback_monitor_plot"),
+                "plot_history_sec": LaunchConfiguration("joint_feedback_monitor_history_sec"),
+                "plot_rate_hz": LaunchConfiguration("joint_feedback_monitor_rate_hz"),
+                "plot_min_rad": LaunchConfiguration("joint_feedback_monitor_min_rad"),
+                "plot_max_rad": LaunchConfiguration("joint_feedback_monitor_max_rad"),
+                "csv_enabled": LaunchConfiguration("joint_feedback_monitor_csv_enabled"),
+                "csv_file": LaunchConfiguration("joint_feedback_monitor_csv_file"),
+                "csv_append": LaunchConfiguration("joint_feedback_monitor_csv_append"),
+            },
+        ],
+        condition=IfCondition(LaunchConfiguration("start_joint_feedback_monitor")),
+    )
+
     return LaunchDescription(
         common_bringup_launch_arguments()
         + [
@@ -156,5 +199,7 @@ def generate_launch_description():
             rviz_node,
             handeye_publisher,
             homing_button,
+            dynamics_monitor,
+            joint_feedback_monitor,
         ]
     )

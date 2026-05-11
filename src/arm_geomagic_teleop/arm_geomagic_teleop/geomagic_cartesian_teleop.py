@@ -8,6 +8,7 @@ from geometry_msgs.msg import PoseStamped, TwistStamped
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.time import Time
 from rclpy._rclpy_pybind11 import RCLError
 from sensor_msgs.msg import Joy
 from std_msgs.msg import String
@@ -75,6 +76,27 @@ def quaternion_to_rotvec(q: Tuple[float, float, float, float]) -> List[float]:
     return [angle * x / sin_half, angle * y / sin_half, angle * z / sin_half]
 
 
+def rotate_vector_by_quaternion(
+    values: List[float], q: Tuple[float, float, float, float]
+) -> List[float]:
+    x, y, z, w = normalize_quaternion(q)
+    xx = x * x
+    yy = y * y
+    zz = z * z
+    xy = x * y
+    xz = x * z
+    yz = y * z
+    wx = w * x
+    wy = w * y
+    wz = w * z
+    vx, vy, vz = values
+    return [
+        (1.0 - 2.0 * (yy + zz)) * vx + 2.0 * (xy - wz) * vy + 2.0 * (xz + wy) * vz,
+        2.0 * (xy + wz) * vx + (1.0 - 2.0 * (xx + zz)) * vy + 2.0 * (yz - wx) * vz,
+        2.0 * (xz - wy) * vx + 2.0 * (yz + wx) * vy + (1.0 - 2.0 * (xx + yy)) * vz,
+    ]
+
+
 def parse_axis_token(token: str) -> Tuple[int, float]:
     token = token.strip().lower()
     sign = -1.0 if token.startswith("-") else 1.0
@@ -95,6 +117,10 @@ def clean_near_zero(value: float) -> float:
     return 0.0 if abs(value) <= 1e-12 else value
 
 
+def vector_norm(values: List[float]) -> float:
+    return math.sqrt(sum(value * value for value in values))
+
+
 class GeomagicCartesianTeleop(Node):
     """Convert deadman-clutched Geomagic pose displacement into bounded Cartesian twist."""
 
@@ -107,6 +133,7 @@ class GeomagicCartesianTeleop(Node):
         self.declare_parameter("status_topic", "/arm_teleop/teleop_status")
         self.declare_parameter("command_frame", "base_link")
         self.declare_parameter("ee_frame_name", "tool0")
+        self.declare_parameter("angular_command_frame", "")
         self.declare_parameter("publish_rate_hz", 50.0)
         self.declare_parameter("input_timeout_s", 0.25)
         self.declare_parameter("deadman_button_index", 0)
@@ -128,6 +155,7 @@ class GeomagicCartesianTeleop(Node):
         self.status_topic = self.get_parameter("status_topic").value
         self.command_frame = self.get_parameter("command_frame").value
         self.ee_frame_name = self.get_parameter("ee_frame_name").value
+        self.angular_command_frame = self.get_parameter("angular_command_frame").value or self.ee_frame_name
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
         self.input_timeout_s = float(self.get_parameter("input_timeout_s").value)
         self.deadman_button_index = int(self.get_parameter("deadman_button_index").value)
@@ -151,7 +179,11 @@ class GeomagicCartesianTeleop(Node):
         self.clutch_anchor: Optional[PoseStamped] = None
         self.filtered_linear = [0.0, 0.0, 0.0]
         self.filtered_angular = [0.0, 0.0, 0.0]
+        self.last_device_delta = [0.0, 0.0, 0.0]
+        self.last_linear_command = [0.0, 0.0, 0.0]
+        self.last_pose_position = [0.0, 0.0, 0.0]
         self.last_deadman = False
+        self.last_angular_tf_warn_time = self.get_clock().now() - Duration(seconds=10.0)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -165,12 +197,18 @@ class GeomagicCartesianTeleop(Node):
         self.get_logger().warn(
             f"Geomagic teleop ready: deadman={self.deadman_button_index}, "
             f"linear_limit={self.max_linear_speed:.3f} m/s, "
-            f"angular_limit={self.max_angular_speed:.3f} rad/s"
+            f"angular_limit={self.max_angular_speed:.3f} rad/s, "
+            f"angular_frame={self.angular_command_frame}"
         )
 
     def pose_callback(self, msg: PoseStamped) -> None:
         self.latest_pose = msg
         self.latest_pose_time = self.get_clock().now()
+        self.last_pose_position = [
+            float(msg.pose.position.x),
+            float(msg.pose.position.y),
+            float(msg.pose.position.z),
+        ]
 
     def buttons_callback(self, msg: Joy) -> None:
         self.buttons = [1 if value else 0 for value in msg.buttons]
@@ -194,12 +232,16 @@ class GeomagicCartesianTeleop(Node):
                 self.clutch_anchor = self.latest_pose
                 self.filtered_linear = [0.0, 0.0, 0.0]
                 self.filtered_angular = [0.0, 0.0, 0.0]
+                self.last_device_delta = [0.0, 0.0, 0.0]
+                self.last_linear_command = [0.0, 0.0, 0.0]
                 self.publish_status("clutched")
             self.publish_motion_command()
         else:
             self.clutch_anchor = None
             self.filtered_linear = [0.0, 0.0, 0.0]
             self.filtered_angular = [0.0, 0.0, 0.0]
+            self.last_device_delta = [0.0, 0.0, 0.0]
+            self.last_linear_command = [0.0, 0.0, 0.0]
             if self.zero_on_release:
                 self.publish_twist(self.filtered_linear, self.filtered_angular)
             self.publish_status("idle" if fresh else "waiting_for_input")
@@ -217,11 +259,13 @@ class GeomagicCartesianTeleop(Node):
             current.position.y - anchor.position.y,
             current.position.z - anchor.position.z,
         ]
+        self.last_device_delta = [float(value) for value in device_delta]
         linear = []
         for index, sign in self.axis_map:
             linear.append(sign * apply_deadband(device_delta[index], self.translation_deadband))
         linear = [self.translation_gain * value for value in linear]
         linear = clamp_vector(linear, self.max_linear_speed)
+        self.last_linear_command = list(linear)
 
         angular = [0.0, 0.0, 0.0]
         if self.orientation_enabled:
@@ -259,7 +303,34 @@ class GeomagicCartesianTeleop(Node):
         for index, sign in self.angular_axis_map:
             angular.append(sign * apply_deadband(device_rotvec[index], self.orientation_deadband))
         angular = [self.rotation_gain * value for value in angular]
-        return clamp_vector(angular, self.max_angular_speed)
+        angular = clamp_vector(angular, self.max_angular_speed)
+        return self.angular_to_command_frame(angular)
+
+    def angular_to_command_frame(self, angular: List[float]) -> List[float]:
+        if self.angular_command_frame == self.command_frame or vector_norm(angular) <= 1e-12:
+            return angular
+
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.command_frame,
+                self.angular_command_frame,
+                Time(),
+            )
+        except TransformException as exc:
+            now = self.get_clock().now()
+            if now - self.last_angular_tf_warn_time > Duration(seconds=1.0):
+                self.get_logger().warn(
+                    "Cannot transform angular teleop command from "
+                    f"{self.angular_command_frame} to {self.command_frame}: {exc}"
+                )
+                self.last_angular_tf_warn_time = now
+            return [0.0, 0.0, 0.0]
+
+        rotation = transform.transform.rotation
+        return rotate_vector_by_quaternion(
+            angular,
+            (rotation.x, rotation.y, rotation.z, rotation.w),
+        )
 
     def publish_twist(self, linear: List[float], angular: List[float]) -> None:
         msg = TwistStamped()
@@ -277,7 +348,16 @@ class GeomagicCartesianTeleop(Node):
         msg = String()
         msg.data = (
             f"state={state}; deadman={int(self.deadman_active())}; "
-            f"orientation={int(self.orientation_enabled)}; output={self.output_twist_topic}"
+            f"fresh={int(self.input_fresh())}; "
+            f"delta_norm={vector_norm(self.last_device_delta):.6f}; "
+            f"raw_linear_norm={vector_norm(self.last_linear_command):.6f}; "
+            f"filtered_linear_norm={vector_norm(self.filtered_linear):.6f}; "
+            f"filtered_linear=({self.filtered_linear[0]:.4f},{self.filtered_linear[1]:.4f},{self.filtered_linear[2]:.4f}); "
+            f"filtered_angular_norm={vector_norm(self.filtered_angular):.6f}; "
+            f"filtered_angular=({self.filtered_angular[0]:.4f},{self.filtered_angular[1]:.4f},{self.filtered_angular[2]:.4f}); "
+            f"pose=({self.last_pose_position[0]:.4f},{self.last_pose_position[1]:.4f},{self.last_pose_position[2]:.4f}); "
+            f"orientation={int(self.orientation_enabled)}; angular_frame={self.angular_command_frame}; "
+            f"output={self.output_twist_topic}"
         )
         self.status_pub.publish(msg)
 

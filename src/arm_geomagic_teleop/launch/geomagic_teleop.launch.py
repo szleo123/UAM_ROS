@@ -15,10 +15,15 @@ def _as_bool(context, name):
 def _setup(context, *args, **kwargs):
     config_file = LaunchConfiguration("teleop_config").perform(context)
     require_homing = _as_bool(context, "require_homing")
+    require_deadman = _as_bool(context, "require_deadman")
     dry_run = _as_bool(context, "dry_run")
     armed_on_start = _as_bool(context, "armed_on_start")
+    start_safety_filter = _as_bool(context, "start_safety_filter")
     output_trajectory_topic = (
         "/arm_teleop/dry_run_joint_trajectory" if dry_run else "/arm_controller/joint_trajectory"
+    )
+    teleop_output_topic = (
+        "/arm_teleop/raw_twist_cmd" if start_safety_filter else "/arm_teleop/twist_cmd"
     )
 
     moveit_config = build_moveit_config(pipelines=["ompl"])
@@ -50,7 +55,21 @@ def _setup(context, *args, **kwargs):
             executable="geomagic_cartesian_teleop",
             name="geomagic_cartesian_teleop",
             output="screen",
+            parameters=[
+                config_file,
+                {
+                    "output_twist_topic": teleop_output_topic,
+                },
+            ],
+            condition=IfCondition(LaunchConfiguration("start_geomagic_teleop")),
+        ),
+        Node(
+            package="arm_geomagic_teleop",
+            executable="geomagic_gripper_toggle",
+            name="geomagic_gripper_toggle",
+            output="screen",
             parameters=[config_file],
+            condition=IfCondition(LaunchConfiguration("start_gripper_toggle")),
         ),
         Node(
             package="arm_geomagic_teleop",
@@ -63,6 +82,7 @@ def _setup(context, *args, **kwargs):
                     "require_homing": require_homing,
                 },
             ],
+            condition=IfCondition(LaunchConfiguration("start_safety_filter")),
         ),
         Node(
             package="arm_geomagic_teleop",
@@ -75,6 +95,7 @@ def _setup(context, *args, **kwargs):
                     "require_homing": require_homing,
                     "armed_on_start": armed_on_start,
                     "output_trajectory_topic": output_trajectory_topic,
+                    "require_deadman": require_deadman,
                 },
             ],
         ),
@@ -145,8 +166,8 @@ def generate_launch_description():
                     "moveit_msgs/srv/ChangeControlDimensions",
                     (
                         "{control_x_translation: true, control_y_translation: true, "
-                        "control_z_translation: true, control_x_rotation: false, "
-                        "control_y_rotation: false, control_z_rotation: false}"
+                        "control_z_translation: true, control_x_rotation: true, "
+                        "control_y_rotation: true, control_z_rotation: true}"
                     ),
                 ],
                 output="screen",
@@ -173,18 +194,38 @@ def generate_launch_description():
                 description="Start adapter from /phantom/state to /geomagic_touch topics.",
             ),
             DeclareLaunchArgument(
-                "require_homing",
+                "start_geomagic_teleop",
                 default_value="true",
+                description="Start Geomagic pose-to-twist teleop node.",
+            ),
+            DeclareLaunchArgument(
+                "start_gripper_toggle",
+                default_value="true",
+                description="Use the second Geomagic button to toggle the gripper controller.",
+            ),
+            DeclareLaunchArgument(
+                "start_safety_filter",
+                default_value="true",
+                description="Start raw teleop safety filter before commands reach Servo.",
+            ),
+            DeclareLaunchArgument(
+                "require_homing",
+                default_value="false",
                 description="Require /arm_homing/state == 4 before motion reaches Servo/gate.",
             ),
             DeclareLaunchArgument(
-                "dry_run",
+                "require_deadman",
                 default_value="true",
+                description="Require deadman button before the final trajectory gate forwards commands.",
+            ),
+            DeclareLaunchArgument(
+                "dry_run",
+                default_value="false",
                 description="Route gated Servo trajectories to /arm_teleop/dry_run_joint_trajectory.",
             ),
             DeclareLaunchArgument(
                 "armed_on_start",
-                default_value="false",
+                default_value="true",
                 description="Start final trajectory gate armed. Keep false for first real tests.",
             ),
             DeclareLaunchArgument(
@@ -194,7 +235,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "check_collisions",
-                default_value="false",
+                default_value="true",
                 description="Enable MoveIt Servo collision checking.",
             ),
             geomagic_driver_node,

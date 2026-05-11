@@ -42,6 +42,10 @@ def clean_near_zero(value: float) -> float:
     return 0.0 if abs(value) <= 1e-12 else value
 
 
+def vector_norm(values: List[float]) -> float:
+    return math.sqrt(sum(value * value for value in values))
+
+
 class TeleopSafetyFilter(Node):
     """Gate and smooth teleop twist commands before MoveIt Servo."""
 
@@ -102,6 +106,8 @@ class TeleopSafetyFilter(Node):
         self.latest_homing_time = self.get_clock().now()
         self.filtered_linear = [0.0, 0.0, 0.0]
         self.filtered_angular = [0.0, 0.0, 0.0]
+        self.last_target_linear = [0.0, 0.0, 0.0]
+        self.last_target_angular = [0.0, 0.0, 0.0]
         self.last_publish_time = self.get_clock().now()
         self.last_reason = "startup_hold"
 
@@ -187,6 +193,8 @@ class TeleopSafetyFilter(Node):
         self.last_publish_time = now
 
         linear, angular, reason = self.compute_target()
+        self.last_target_linear = list(linear)
+        self.last_target_angular = list(angular)
         linear = self.apply_accel_limit(self.filtered_linear, linear, self.max_linear_accel, dt)
         angular = self.apply_accel_limit(self.filtered_angular, angular, self.max_angular_accel, dt)
 
@@ -263,11 +271,22 @@ class TeleopSafetyFilter(Node):
         self.twist_pub.publish(msg)
 
     def publish_status(self) -> None:
+        raw_linear = [0.0, 0.0, 0.0]
+        raw_angular = [0.0, 0.0, 0.0]
+        if self.latest_twist is not None:
+            twist = self.latest_twist.twist
+            raw_linear = [twist.linear.x, twist.linear.y, twist.linear.z]
+            raw_angular = [twist.angular.x, twist.angular.y, twist.angular.z]
         msg = String()
         msg.data = (
             f"homed={int(self.homing_ready())}; homing_state={self.homing_state}; "
             f"deadman={int(self.deadman_active())}; raw_fresh={int(self.twist_fresh())}; "
-            f"reason={self.last_reason}; output={self.output_twist_topic}"
+            f"reason={self.last_reason}; raw_linear_norm={vector_norm(raw_linear):.6f}; "
+            f"target_linear_norm={vector_norm(self.last_target_linear):.6f}; "
+            f"filtered_linear_norm={vector_norm(self.filtered_linear):.6f}; "
+            f"raw_angular_norm={vector_norm(raw_angular):.6f}; "
+            f"target_angular_norm={vector_norm(self.last_target_angular):.6f}; "
+            f"output={self.output_twist_topic}"
         )
         self.status_pub.publish(msg)
 

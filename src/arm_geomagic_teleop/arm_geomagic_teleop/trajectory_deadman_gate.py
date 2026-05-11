@@ -24,6 +24,10 @@ def as_bool(value) -> bool:
     return bool(value)
 
 
+def clamp(value: float, limit: float) -> float:
+    return max(-limit, min(limit, value))
+
+
 class TrajectoryDeadmanGate(Node):
     """Forward Servo trajectories only when armed, homed, deadman-held, and commanded."""
 
@@ -50,6 +54,11 @@ class TrajectoryDeadmanGate(Node):
         self.declare_parameter("armed_on_start", False)
         self.declare_parameter("publish_hold_on_block", True)
         self.declare_parameter("hold_duration_s", 0.20)
+        self.declare_parameter("integrate_servo_deltas", False)
+        self.declare_parameter("integrated_command_scale", 1.0)
+        self.declare_parameter("max_integrated_step_rad", 0.03)
+        self.declare_parameter("integrated_command_duration_s", 0.05)
+        self.declare_parameter("integrated_publish_rate_hz", 10.0)
 
         self.input_trajectory_topic = self.get_parameter("input_trajectory_topic").value
         self.output_trajectory_topic = self.get_parameter("output_trajectory_topic").value
@@ -71,6 +80,15 @@ class TrajectoryDeadmanGate(Node):
         self.armed = as_bool(self.get_parameter("armed_on_start").value)
         self.publish_hold_on_block = as_bool(self.get_parameter("publish_hold_on_block").value)
         self.hold_duration_s = float(self.get_parameter("hold_duration_s").value)
+        self.integrate_servo_deltas = as_bool(self.get_parameter("integrate_servo_deltas").value)
+        self.integrated_command_scale = float(self.get_parameter("integrated_command_scale").value)
+        self.max_integrated_step = abs(float(self.get_parameter("max_integrated_step_rad").value))
+        self.integrated_command_duration_s = float(
+            self.get_parameter("integrated_command_duration_s").value
+        )
+        self.integrated_publish_period_s = 1.0 / max(
+            float(self.get_parameter("integrated_publish_rate_hz").value), 1.0
+        )
 
         self.buttons: List[int] = []
         self.latest_button_time = self.get_clock().now()
@@ -79,6 +97,8 @@ class TrajectoryDeadmanGate(Node):
         self.homing_state: Optional[int] = None
         self.latest_homing_time = self.get_clock().now()
         self.latest_joint_positions: Dict[str, float] = {}
+        self.integrated_positions: Dict[str, float] = {}
+        self.last_integrated_publish_time = self.get_clock().now()
         self.forwarding_active = False
         self.forwarded_count = 0
         self.blocked_count = 0
@@ -97,7 +117,8 @@ class TrajectoryDeadmanGate(Node):
 
         self.get_logger().warn(
             f"Trajectory gate active: armed={self.armed}, homing_required={self.require_homing}, "
-            f"input={self.input_trajectory_topic}, output={self.output_trajectory_topic}"
+            f"input={self.input_trajectory_topic}, output={self.output_trajectory_topic}, "
+            f"integrate_servo_deltas={self.integrate_servo_deltas}"
         )
 
     def buttons_callback(self, msg: Joy) -> None:
@@ -173,7 +194,16 @@ class TrajectoryDeadmanGate(Node):
         is_allowed, reason = self.allowed()
         self.last_reason = reason
         if is_allowed:
-            self.trajectory_pub.publish(msg)
+            output = self.integrate_trajectory(msg) if self.integrate_servo_deltas else msg
+            if output is None:
+                if self.integrate_servo_deltas:
+                    self.forwarding_active = True
+                    self.forwarded_count += 1
+                else:
+                    self.blocked_count += 1
+                    self.last_reason = "waiting_for_joint_state"
+                return
+            self.trajectory_pub.publish(output)
             self.forwarded_count += 1
             self.forwarding_active = True
         else:
@@ -181,6 +211,51 @@ class TrajectoryDeadmanGate(Node):
             if self.forwarding_active:
                 self.publish_hold()
                 self.forwarding_active = False
+            self.integrated_positions = {}
+
+    def integrate_trajectory(self, msg: JointTrajectory) -> Optional[JointTrajectory]:
+        if not msg.points or not msg.points[0].positions:
+            return None
+        if any(joint not in self.latest_joint_positions for joint in self.arm_joints):
+            return None
+        if any(joint not in self.integrated_positions for joint in self.arm_joints):
+            self.integrated_positions = {
+                joint: self.latest_joint_positions[joint] for joint in self.arm_joints
+            }
+
+        target_by_joint = {
+            joint: float(position)
+            for joint, position in zip(msg.joint_names, msg.points[0].positions)
+            if joint in self.arm_joints
+        }
+        if any(joint not in target_by_joint for joint in self.arm_joints):
+            return None
+
+        output = JointTrajectory()
+        output.header.stamp = self.get_clock().now().to_msg()
+        output.joint_names = list(self.arm_joints)
+        point = JointTrajectoryPoint()
+        for joint in self.arm_joints:
+            servo_step = target_by_joint[joint] - self.latest_joint_positions[joint]
+            servo_step = clamp(
+                servo_step * self.integrated_command_scale,
+                self.max_integrated_step,
+            )
+            self.integrated_positions[joint] += servo_step
+            point.positions.append(self.integrated_positions[joint])
+
+        now = self.get_clock().now()
+        elapsed = (now - self.last_integrated_publish_time).nanoseconds * 1e-9
+        if elapsed < self.integrated_publish_period_s:
+            return None
+        self.last_integrated_publish_time = now
+
+        point.time_from_start.sec = int(self.integrated_command_duration_s)
+        point.time_from_start.nanosec = int(
+            (self.integrated_command_duration_s % 1.0) * 1e9
+        )
+        output.points = [point]
+        return output
 
     def check_falling_edge(self) -> None:
         is_allowed, reason = self.allowed()
@@ -188,6 +263,7 @@ class TrajectoryDeadmanGate(Node):
         if self.forwarding_active and not is_allowed:
             self.publish_hold()
             self.forwarding_active = False
+            self.integrated_positions = {}
 
     def publish_hold(self) -> None:
         if not self.publish_hold_on_block:
@@ -205,6 +281,7 @@ class TrajectoryDeadmanGate(Node):
         msg.points = [point]
         self.trajectory_pub.publish(msg)
         self.hold_count += 1
+        self.integrated_positions = {}
         self.get_logger().warn("Published hold trajectory after teleop gate blocked motion.")
 
     def set_armed_callback(self, request: SetBool.Request, response: SetBool.Response) -> SetBool.Response:
@@ -212,6 +289,8 @@ class TrajectoryDeadmanGate(Node):
         if not self.armed and self.forwarding_active:
             self.publish_hold()
             self.forwarding_active = False
+        if not self.armed:
+            self.integrated_positions = {}
         response.success = True
         response.message = f"trajectory gate {'armed' if self.armed else 'disarmed'}"
         self.publish_status()

@@ -26,7 +26,9 @@ class GeomagicOmniStateAdapter(Node):
         self.declare_parameter("frame_id", "geomagic_touch_base")
         self.declare_parameter("pose_position_scale", 0.001)
         self.declare_parameter("deadman_from_locked", True)
+        self.declare_parameter("deadman_source", "")
         self.declare_parameter("gripper_from_close_gripper", False)
+        self.declare_parameter("stamp_with_now", True)
 
         self.omni_state_topic = self.get_parameter("omni_state_topic").value
         self.output_pose_topic = self.get_parameter("output_pose_topic").value
@@ -34,9 +36,11 @@ class GeomagicOmniStateAdapter(Node):
         self.frame_id = self.get_parameter("frame_id").value
         self.pose_position_scale = float(self.get_parameter("pose_position_scale").value)
         self.deadman_from_locked = as_bool(self.get_parameter("deadman_from_locked").value)
+        self.deadman_source = str(self.get_parameter("deadman_source").value).strip().lower()
         self.gripper_from_close_gripper = as_bool(
             self.get_parameter("gripper_from_close_gripper").value
         )
+        self.stamp_with_now = as_bool(self.get_parameter("stamp_with_now").value)
 
         try:
             from omni_msgs.msg import OmniState
@@ -58,6 +62,8 @@ class GeomagicOmniStateAdapter(Node):
     def state_callback(self, msg) -> None:
         pose = PoseStamped()
         pose.header = msg.header
+        if self.stamp_with_now:
+            pose.header.stamp = self.get_clock().now().to_msg()
         if not pose.header.frame_id:
             pose.header.frame_id = self.frame_id
         pose.pose = msg.pose
@@ -67,8 +73,21 @@ class GeomagicOmniStateAdapter(Node):
         self.pose_pub.publish(pose)
 
         buttons = Joy()
-        buttons.header = msg.header
-        deadman = bool(msg.locked) if self.deadman_from_locked else not bool(msg.locked)
+        buttons.header = pose.header
+        locked = bool(msg.locked)
+        close_gripper = bool(msg.close_gripper)
+        if self.deadman_source == "locked":
+            deadman = locked
+        elif self.deadman_source == "close_gripper":
+            deadman = close_gripper
+        elif self.deadman_source == "either":
+            deadman = locked or close_gripper
+        elif self.deadman_source == "both":
+            deadman = locked and close_gripper
+        elif self.deadman_source == "not_locked":
+            deadman = not locked
+        else:
+            deadman = locked if self.deadman_from_locked else not locked
         gripper = bool(msg.close_gripper) if self.gripper_from_close_gripper else False
         buttons.buttons = [1 if deadman else 0, 1 if gripper else 0]
         buttons.axes = []

@@ -17,7 +17,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <fstream>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -26,6 +25,10 @@
 #include <vector>
 
 #include <libserial/SerialPort.h>
+#ifdef MY_ARM_HARDWARE_HAS_PINOCCHIO
+#include <pinocchio/multibody/data.hpp>
+#include <pinocchio/multibody/model.hpp>
+#endif
 #include "hardware_interface/handle.hpp"
 #include "hardware_interface/hardware_info.hpp"
 #include "hardware_interface/system_interface.hpp"
@@ -39,15 +42,10 @@
 #include "rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp"
 #include "rclcpp_lifecycle/state.hpp"
 #include "std_msgs/msg/empty.hpp"
+#include "std_msgs/msg/float64_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_msgs/msg/u_int8.hpp"
 #include "std_srvs/srv/trigger.hpp"
-
-struct _XDisplay;
-struct _XGC;
-using Display = _XDisplay;
-using Window = unsigned long;
-using GC = _XGC *;
 
 namespace my_arm_hardware
 {
@@ -101,6 +99,19 @@ private:
     ALL_READY = 4,
   };
 
+  enum class ArmCommandFrameFormat : uint8_t
+  {
+    LEGACY_POSITION = 0,
+    POSITION_TORQUE = 1,
+  };
+
+  enum class DynamicsMode : uint8_t
+  {
+    GRAVITY = 0,
+    CORIOLIS = 1,
+    FULL = 2,
+  };
+
   // Parameters for the Serial communications 
   std::string serial_port_path_ {"/dev/ttyUSB0"};
   std::string reader_port_path_ {"/dev/ttyUSB1"};
@@ -112,6 +123,33 @@ private:
   std::array<double, 6> arm_joint_signs_ {{1.0, 1.0, -1.0, 1.0, 1.0, 1.0}};
   std::array<double, 6> arm_joint_offsets_ {{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
   double hw_slowdown_; // low-pass factor if no feedback 
+
+  ArmCommandFrameFormat arm_command_frame_format_{ArmCommandFrameFormat::LEGACY_POSITION};
+  bool enable_dynamics_feedforward_{false};
+  DynamicsMode dynamics_mode_{DynamicsMode::GRAVITY};
+  bool dynamics_use_commanded_position_{false};
+  std::string dynamics_urdf_path_;
+  std::string dynamics_feedforward_source_{"topic"};
+  std::string dynamics_feedforward_topic_{"/arm_dynamics/torques_nm"};
+  double dynamics_torque_scale_{1.0};
+  double dynamics_torque_low_pass_alpha_{0.2};
+  bool dynamics_model_ready_{false};
+  bool dynamics_warned_unavailable_{false};
+  std::array<double, 6> dynamics_torque_limits_nm_{{0.5, 0.5, 0.3, 0.2, 0.15, 0.1}};
+  std::array<double, 6> dynamics_torque_signs_{{1.0, 1.0, -1.0, 1.0, 1.0, 1.0}};
+  std::array<double, 6> dynamics_last_tau_ros_nm_{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+  std::array<double, 6> dynamics_last_commands_{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+  std::array<double, 6> dynamics_last_command_velocities_{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+  std::array<double, 6> dynamics_topic_tau_ros_nm_{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+  rclcpp::Time dynamics_topic_last_time_{0, 0, RCL_ROS_TIME};
+  double dynamics_topic_timeout_sec_{0.25};
+  bool dynamics_command_history_ready_{false};
+#ifdef MY_ARM_HARDWARE_HAS_PINOCCHIO
+  pinocchio::Model dynamics_model_;
+  std::unique_ptr<pinocchio::Data> dynamics_data_;
+  std::array<int, 6> dynamics_joint_q_indices_{{-1, -1, -1, -1, -1, -1}};
+  std::array<int, 6> dynamics_joint_v_indices_{{-1, -1, -1, -1, -1, -1}};
+#endif
 
   // Objects for logging
   std::shared_ptr<rclcpp::Logger> logger_;
@@ -177,51 +215,18 @@ private:
     return aux_joint_min_ + t * (aux_joint_max_ - aux_joint_min_);
   }
 
-  // Optional realtime feedback UI
-  bool feedback_plot_enabled_{false};
-  double feedback_plot_rate_hz_{5.0};
-  double feedback_plot_min_rad_{-3.14};
-  double feedback_plot_max_rad_{3.14};
-  std::vector<std::string> feedback_plot_joint_filter_;
-  std::vector<size_t> feedback_plot_indices_;
-  rclcpp::Time feedback_plot_last_render_{0, 0, RCL_ROS_TIME};
-  size_t feedback_plot_history_length_{400};
-  int feedback_plot_width_{640};
-  int feedback_plot_height_{240};
-  bool feedback_plot_windows_ready_{false};
-  bool feedback_display_failed_{false};
-  std::vector<std::string> feedback_plot_window_names_;
-  std::vector<std::vector<double>> feedback_plot_history_;
-  std::vector<std::vector<double>> feedback_plot_command_history_;
   std::vector<double> last_sent_commands_;
-  Display *feedback_display_{nullptr};
-  int feedback_screen_{0};
-  unsigned long feedback_color_bg_{0};
-  unsigned long feedback_color_grid_{0};
-  unsigned long feedback_color_line_{0};
-  unsigned long feedback_color_cmd_line_{0};
-  unsigned long feedback_color_text_{0};
-  std::vector<Window> feedback_windows_;
-  std::vector<GC> feedback_window_gcs_;
-  bool feedback_plot_csv_enabled_{false};
-  bool feedback_plot_csv_append_{false};
-  std::string feedback_plot_csv_path_{"joint_feedback_log.csv"};
-  std::ofstream feedback_plot_csv_stream_;
-  std::mutex feedback_plot_csv_mutex_;
-
-  void update_feedback_plot_selection();
-  void ensure_feedback_plot_storage();
-  void ensure_feedback_windows_created();
-  void maybe_render_feedback_plot();
-  void render_joint_plot(size_t slot, size_t joint_idx);
-  void ensure_feedback_csv_ready();
-  void log_feedback_csv(size_t joint_idx, double stamp_sec, double feedback, double command);
-  void close_feedback_csv();
   void reset_joint_buffers(double value);
   void sync_commands_to_states();
   size_t arm_joint_count() const;
   bool has_aux_joint() const;
   size_t aux_joint_index() const;
+  void parse_dynamics_parameters();
+  void initialize_dynamics_model();
+  std::array<double, 6> compute_dynamics_torques(const rclcpp::Duration & period);
+  void publish_dynamics_torques(const std::array<double, 6> & tau_ros_nm);
+  std::vector<uint8_t> build_position_command_frame();
+  std::vector<uint8_t> build_position_torque_command_frame(const std::array<double, 6> & tau_hw_nm);
   void setup_homing_interface();
   void teardown_homing_interface();
   void publish_homing_state(RosMasterHomingState state, const std::string & message);
@@ -239,6 +244,8 @@ private:
   std::thread homing_spin_thread_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr homing_status_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr homing_state_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr dynamics_tau_pub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr dynamics_tau_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr homing_init_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr homing_drop_pose_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr homing_init_srv_;

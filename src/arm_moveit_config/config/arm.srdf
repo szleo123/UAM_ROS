@@ -44,11 +44,19 @@
         <joint name="joint_5" value="-1.57"/>
         <joint name="joint_6" value="1.57"/>
     </group_state>
+    <group_state name="test1" group="arm">
+        <joint name="joint_1" value="0"/>
+        <joint name="joint_2" value="2.0944"/>
+        <joint name="joint_3" value="1.309"/>
+        <joint name="joint_4" value="-1.57"/>
+        <joint name="joint_5" value="-0.785398"/>
+        <joint name="joint_6" value="-1.57"/>
+    </group_state>
     <group_state name="open" group="gripper">
-        <joint name="tool_joint" value="0"/>
+        <joint name="tool_joint" value="0.0"/>
     </group_state>
     <group_state name="close" group="gripper">
-        <joint name="tool_joint" value="-3.14"/>
+        <joint name="tool_joint" value="-0.69"/>
     </group_state>
 
     <virtual_joint name="world_base" type="fixed" parent_frame="world" child_link="uav_mount"/>

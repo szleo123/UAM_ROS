@@ -23,8 +23,12 @@ setup(
         "console_scripts": [
             "geomagic_omni_state_adapter = arm_geomagic_teleop.geomagic_omni_state_adapter:main",
             "geomagic_cartesian_teleop = arm_geomagic_teleop.geomagic_cartesian_teleop:main",
+            "geomagic_gripper_toggle = arm_geomagic_teleop.geomagic_gripper_toggle:main",
             "teleop_safety_filter = arm_geomagic_teleop.teleop_safety_filter:main",
             "trajectory_deadman_gate = arm_geomagic_teleop.trajectory_deadman_gate:main",
+            "teleop_test_jog = arm_geomagic_teleop.teleop_test_jog:main",
+            "direct_joint_step = arm_geomagic_teleop.direct_joint_step:main",
+            "trajectory_delta_probe = arm_geomagic_teleop.trajectory_delta_probe:main",
         ],
     },
 )

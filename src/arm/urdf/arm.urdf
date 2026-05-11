@@ -298,7 +298,7 @@
     <parent link="link_6" />
     <child link="tool_link" />
     <axis xyz="0 0 1" />
-    <limit lower="-3.14" upper="3.14" effort="0" velocity="2.0" />
+    <limit lower="-0.69" upper="0.0" effort="0" velocity="2.0" />
   </joint>
 
   <!-- Stable TCP frame for MoveIt, RViz, and tracker nodes. -->
