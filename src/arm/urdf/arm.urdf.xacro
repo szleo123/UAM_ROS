@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="arm">
+  <xacro:arg name="aux_joint_min" default="-0.69"/>
+  <xacro:arg name="aux_joint_max" default="0.0"/>
+
+  <xacro:include filename="arm_core.urdf.xacro"/>
+  <xacro:include filename="grippers/my_gripper_1.urdf.xacro"/>
+
+  <link name="uav_mount"/>
+
+  <joint name="uav_arm_mount" type="fixed">
+    <parent link="uav_mount"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <xacro:arm_core/>
+
+  <!-- Stable TCP frame for MoveIt, RViz, and tracker nodes. -->
+  <link name="tool0"/>
+
+  <joint name="tool0_fixed" type="fixed">
+    <parent link="link_6"/>
+    <child link="tool0"/>
+    <origin xyz="0 0.01 0.2" rpy="0 0 0"/>
+  </joint>
+
+  <xacro:my_gripper_1
+    parent_link="link_6"
+    attach_xyz="0 0 0"
+    attach_rpy="0 0 0"
+    tool_joint_min="$(arg aux_joint_min)"
+    tool_joint_max="$(arg aux_joint_max)"/>
+</robot>

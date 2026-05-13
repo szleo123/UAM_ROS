@@ -27,8 +27,8 @@
     <xacro:arg name="dynamics_torque_limits_nm" default="0.5,0.5,0.3,0.2,0.15,0.1" />
     <xacro:arg name="dynamics_torque_joint_signs" default="" />
     <xacro:arg name="dynamics_torque_low_pass_alpha" default="0.2" />
-    <!-- Import arm urdf file -->
-    <xacro:include filename="$(find arm)/urdf/arm.urdf" />
+    <!-- Import the modular arm + selected gripper model. -->
+    <xacro:include filename="$(find arm)/urdf/arm.urdf.xacro" />
 
     <!-- Import control_xacro -->
     <xacro:include filename="arm.ros2_control.xacro" />
@@ -40,8 +40,8 @@
     <xacro:add_world_box
       name="limit_z_max"
       parent_link="uav_mount"
-      xyz="0 0 0.05"                
-      rpy="0 0 1.57"
+      xyz="0 0 0.005"                
+      rpy="0 0 0"
       size="0.4 0.64 0.01"            
       color="0.9 0.1 0.1 0.2"
       collision_only="false"/>
@@ -49,8 +49,8 @@
     <xacro:add_world_box
       name="limit_y_min"
       parent_link="uav_mount"
-      xyz="0.32 0 -0.75"                
-      rpy="1.57 0 1.57"
+      xyz="0 -0.32 -0.75"                
+      rpy="1.57 0 0"
       size="0.4 1.6 0.01"            
       color="0.9 0.1 0.1 0.2"
       collision_only="false"/>
@@ -58,8 +58,8 @@
     <xacro:add_world_box
       name="limit_y_max"
       parent_link="uav_mount"
-      xyz="-0.32 0 -0.75"                
-      rpy="1.57 0 1.57"
+      xyz="0 0.32 -0.75"                
+      rpy="1.57 0 0"
       size="0.4 1.6 0.01"            
       color="0.9 0.1 0.1 0.2"
       collision_only="false"/>

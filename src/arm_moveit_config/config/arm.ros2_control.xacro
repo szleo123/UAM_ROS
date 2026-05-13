@@ -108,9 +108,9 @@
 
             <xacro:position_joint_interfaces joint_name="joint_1" initial_value="${initial_positions['joint_1']}" min_limit="-3.14" max_limit="3.14"/>
             <xacro:position_joint_interfaces joint_name="joint_2" initial_value="${initial_positions['joint_2']}" min_limit="0.0" max_limit="3.14"/>
-            <xacro:position_joint_interfaces joint_name="joint_3" initial_value="${initial_positions['joint_3']}" min_limit="0.0" max_limit="3.14"/>
+            <xacro:position_joint_interfaces joint_name="joint_3" initial_value="${initial_positions['joint_3']}" min_limit="-3.14" max_limit="0.0"/>
             <xacro:position_joint_interfaces joint_name="joint_4" initial_value="${initial_positions['joint_4']}" min_limit="-3.14" max_limit="3.14"/>
-            <xacro:position_joint_interfaces joint_name="joint_5" initial_value="${initial_positions['joint_5']}" min_limit="-3.14" max_limit="0.0"/>
+            <xacro:position_joint_interfaces joint_name="joint_5" initial_value="${initial_positions['joint_5']}" min_limit="0.0" max_limit="3.14"/>
             <xacro:position_joint_interfaces joint_name="joint_6" initial_value="${initial_positions['joint_6']}" min_limit="-3.14" max_limit="3.14"/>
             <xacro:position_joint_interfaces joint_name="tool_joint" initial_value="${initial_positions['tool_joint']}" min_limit="${aux_joint_min}" max_limit="${aux_joint_max}"/>
         </ros2_control>

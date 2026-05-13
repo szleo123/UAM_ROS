@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="my_gripper_1" params="parent_link attach_xyz:='0 0 0' attach_rpy:='0 0 0' tool_joint_min:='-0.69' tool_joint_max:='0.0'">
+  <joint name="tool_base_fixed" type="fixed">
+    <parent link="${parent_link}"/>
+    <child link="tool_base"/>
+    <origin xyz="${attach_xyz}" rpy="${attach_rpy}"/>
+  </joint>
+  <link
+    name="tool_base">
+    <inertial>
+      <origin
+        xyz="-0.00247570175891211 0.00192421013672114 0.0748513008412715"
+        rpy="0 0 0" />
+      <mass
+        value="0.0983878201165868" />
+      <inertia
+        ixx="0.000105485313306803"
+        ixy="-2.1042248306272E-08"
+        ixz="-9.20933039542333E-07"
+        iyy="0.000114758918473628"
+        iyz="1.1047801985657E-08"
+        izz="1.15747438919022E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://arm/meshes/grippers/my_gripper_1/tool_base.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://arm/meshes/grippers/my_gripper_1/tool_base.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="tool_link">
+    <inertial>
+      <origin
+        xyz="-0.0168280191021532 0.0281845595187908 0.00070564854294175"
+        rpy="0 0 0" />
+      <mass
+        value="0.054318578390507" />
+      <inertia
+        ixx="2.00880186030608E-05"
+        ixy="1.65175563360546E-05"
+        ixz="-4.99481154962564E-08"
+        iyy="2.16573207842977E-05"
+        iyz="8.1654898204742E-08"
+        izz="4.12786244534564E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://arm/meshes/grippers/my_gripper_1/tool_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://arm/meshes/grippers/my_gripper_1/tool_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="tool_joint"
+    type="revolute">
+    <origin
+      xyz="-0.02305 0.0029234 0.0895"
+      rpy="1.5708 0 0" />
+    <parent
+      link="tool_base" />
+    <child
+      link="tool_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="${tool_joint_min}"
+      upper="${tool_joint_max}"
+      effort="0"
+      velocity="0" />
+  </joint>
+  </xacro:macro>
+</robot>

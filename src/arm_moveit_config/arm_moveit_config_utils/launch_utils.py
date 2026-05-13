@@ -142,7 +142,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "arm_joint_signs",
-            default_value="-1,1,-1,1,1,1",
+            default_value="1,1,1,1,1,1",
             description="Comma-separated signs mapping ROS arm joint positions to hardware positions.",
         ),
         DeclareLaunchArgument(
@@ -320,12 +320,12 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "joint_feedback_monitor_min_rad",
-            default_value="-1.0",
+            default_value="-3.14",
             description="Minimum joint feedback plot range in radians.",
         ),
         DeclareLaunchArgument(
             "joint_feedback_monitor_max_rad",
-            default_value="1.0",
+            default_value="3.14",
             description="Maximum joint feedback plot range in radians.",
         ),
         DeclareLaunchArgument(

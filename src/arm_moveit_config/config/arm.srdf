@@ -9,6 +9,7 @@
     </group>
     <group name="gripper">
         <joint name="tool_joint"/>
+        <link name="tool_base"/>
         <link name="tool_link"/>
     </group>
 
@@ -23,33 +24,33 @@
     <group_state name="extend" group="arm">
         <joint name="joint_1" value="0"/>
         <joint name="joint_2" value="3.14"/>
-        <joint name="joint_3" value="3.14"/>
+        <joint name="joint_3" value="-3.14"/>
         <joint name="joint_4" value="0"/>
-        <joint name="joint_5" value="-1.57"/>
+        <joint name="joint_5" value="1.57"/>
         <joint name="joint_6" value="1.57"/>
     </group_state>
     <group_state name="vertical" group="arm">
         <joint name="joint_1" value="0"/>
         <joint name="joint_2" value="1.57"/>
-        <joint name="joint_3" value="3.14"/>
+        <joint name="joint_3" value="-3.14"/>
         <joint name="joint_4" value="0"/>
-        <joint name="joint_5" value="-1.57"/>
+        <joint name="joint_5" value="1.57"/>
         <joint name="joint_6" value="1.57"/>
     </group_state>
     <group_state name="approach" group="arm">
         <joint name="joint_1" value="0"/>
         <joint name="joint_2" value="1.57"/>
-        <joint name="joint_3" value="1.57"/>
+        <joint name="joint_3" value="-1.57"/>
         <joint name="joint_4" value="0"/>
-        <joint name="joint_5" value="-1.57"/>
+        <joint name="joint_5" value="1.57"/>
         <joint name="joint_6" value="1.57"/>
     </group_state>
     <group_state name="test1" group="arm">
         <joint name="joint_1" value="0"/>
         <joint name="joint_2" value="2.0944"/>
-        <joint name="joint_3" value="1.309"/>
+        <joint name="joint_3" value="-1.309"/>
         <joint name="joint_4" value="-1.57"/>
-        <joint name="joint_5" value="-0.785398"/>
+        <joint name="joint_5" value="0.785398"/>
         <joint name="joint_6" value="-1.57"/>
     </group_state>
     <group_state name="open" group="gripper">
@@ -62,14 +63,29 @@
     <virtual_joint name="world_base" type="fixed" parent_frame="world" child_link="uav_mount"/>
 
     <disable_collisions link1="base_link" link2="link_1" reason="Adjacent"/>
+    <disable_collisions link1="base_link" link2="link_2" reason="Never"/>
     <disable_collisions link1="link_1" link2="link_2" reason="Adjacent"/>
+    <disable_collisions link1="link_1" link2="link_3" reason="Never"/>
+    <disable_collisions link1="link_1" link2="link_4" reason="Never"/>
     <disable_collisions link1="link_2" link2="link_3" reason="Adjacent"/>
+    <disable_collisions link1="link_2" link2="link_4" reason="Never"/>
+    <disable_collisions link1="link_2" link2="link_5" reason="Never"/>
     <disable_collisions link1="link_3" link2="link_4" reason="Adjacent"/>
+    <disable_collisions link1="link_3" link2="link_5" reason="Never"/>
+    <disable_collisions link1="link_3" link2="link_6" reason="Never"/>
+    <disable_collisions link1="link_3" link2="tool_base" reason="Never"/>
+    <disable_collisions link1="link_3" link2="tool_link" reason="Never"/>
     <disable_collisions link1="link_4" link2="link_5" reason="Adjacent"/>
+    <disable_collisions link1="link_4" link2="tool_base" reason="Never"/>
+    <disable_collisions link1="link_4" link2="tool_link" reason="Never"/>
     <disable_collisions link1="link_5" link2="link_6" reason="Adjacent"/>
+    <disable_collisions link1="link_5" link2="tool_base" reason="Never"/>
+    <disable_collisions link1="link_5" link2="tool_link" reason="Never"/>
     <disable_collisions link1="link_6" link2="tool0" reason="Adjacent"/>
+    <disable_collisions link1="link_6" link2="tool_base" reason="Adjacent"/>
     <disable_collisions link1="link_6" link2="tool_link" reason="Never"/>
+    <disable_collisions link1="tool_base" link2="tool_link" reason="Adjacent"/>
+    <disable_collisions link1="tool0" link2="tool_base" reason="Adjacent"/>
     <disable_collisions link1="tool0" link2="tool_link" reason="Adjacent"/>
     <disable_collisions link1="link_4" link2="link_6" reason="Never"/>
-    <disable_collisions link1="link_5" link2="tool_link" reason="Never"/>
 </robot>
