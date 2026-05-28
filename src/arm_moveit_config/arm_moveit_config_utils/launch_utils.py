@@ -29,6 +29,16 @@ HARDWARE_ARGUMENT_NAMES = [
     "ros2_controllers_file",
 ]
 
+STM32_ARGUMENT_NAMES = [
+    "stm32_control_mode",
+    "stm32_kp",
+    "stm32_kd",
+    "stm32_heartbeat_duration_sec",
+    "stm32_trigger_duration_sec",
+    "stm32_feedback_wait_timeout_sec",
+    "enable_stm32_zero_trigger",
+]
+
 GRIPPER_ARGUMENT_NAMES = [
     "aux_joint_min",
     "aux_joint_max",
@@ -65,6 +75,8 @@ JOINT_FEEDBACK_MONITOR_ARGUMENT_NAMES = [
     "joint_feedback_monitor_history_sec",
     "joint_feedback_monitor_min_rad",
     "joint_feedback_monitor_max_rad",
+    "joint_feedback_monitor_velocity_abs",
+    "joint_feedback_monitor_torque_abs",
     "joint_feedback_monitor_csv_enabled",
     "joint_feedback_monitor_csv_file",
     "joint_feedback_monitor_csv_append",
@@ -86,6 +98,7 @@ HANDEYE_ARGUMENT_NAMES = [
 
 COMMON_BRINGUP_ARGUMENT_NAMES = (
     HARDWARE_ARGUMENT_NAMES
+    + STM32_ARGUMENT_NAMES
     + GRIPPER_ARGUMENT_NAMES
     + DYNAMICS_ARGUMENT_NAMES
     + JOINT_FEEDBACK_MONITOR_ARGUMENT_NAMES
@@ -122,13 +135,13 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "serial_port",
-            default_value="/dev/ttyUSB1",
-            description="Serial writer port for the real arm interface.",
+            default_value="/dev/ttyACM0",
+            description="Full-duplex STM32 USB CDC port for the real arm interface.",
         ),
         DeclareLaunchArgument(
             "reader_port",
             default_value="/dev/ttyUSB0",
-            description="Serial reader port for the real arm interface.",
+            description="Deprecated split-reader port kept for legacy protocol compatibility.",
         ),
         DeclareLaunchArgument(
             "baudrate",
@@ -176,6 +189,59 @@ def common_bringup_launch_arguments(
         ),
     ]
 
+    stm32_args = [
+        DeclareLaunchArgument(
+            "stm32_control_mode",
+            default_value="0",
+            description=(
+                "STM32 motor command mode: 0/position_only, 1/position_torque, "
+                "or 2/full_mit."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "stm32_kp",
+            default_value="360,480,320,100,60,10",
+            description=(
+                "Comma-separated per-joint Kp sent to STM32 in full MIT mode. "
+                "Ignored by STM32 position-only mode."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "stm32_kd",
+            default_value="2.0,2.0,1.0,0.5,0.3,1.0",
+            description=(
+                "Comma-separated per-joint Kd sent to STM32 in full MIT mode. "
+                "Ignored by STM32 position-only mode."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "stm32_heartbeat_duration_sec",
+            default_value="1.0",
+            description="Duration of 100 Hz safe-lock heartbeat frames during STM32 boot.",
+        ),
+        DeclareLaunchArgument(
+            "stm32_trigger_duration_sec",
+            default_value="3.0",
+            description=(
+                "Duration of 100 Hz STM32 homing trigger frames. Only used when "
+                "enable_stm32_zero_trigger is true."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "stm32_feedback_wait_timeout_sec",
+            default_value="2.0",
+            description="How long activation waits for valid STM32 feedback after boot handshake.",
+        ),
+        DeclareLaunchArgument(
+            "enable_stm32_zero_trigger",
+            default_value="true",
+            description=(
+                "Enable the operator Confirm Drop Pose packet that triggers STM32 joint-3 zeroing. "
+                "Keep false on hardware until the MCU zeroing sequence is bench-validated."
+            ),
+        ),
+    ]
+
     gripper_args = [
         DeclareLaunchArgument(
             "aux_joint_min",
@@ -212,7 +278,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "enable_dynamics_feedforward",
-            default_value="false",
+            default_value="true",
             description="Compute and send Pinocchio torque feedforward when using position_torque frames.",
         ),
         DeclareLaunchArgument(
@@ -329,6 +395,16 @@ def common_bringup_launch_arguments(
             description="Maximum joint feedback plot range in radians.",
         ),
         DeclareLaunchArgument(
+            "joint_feedback_monitor_velocity_abs",
+            default_value="2.0",
+            description="Initial symmetric velocity plot range in rad/s.",
+        ),
+        DeclareLaunchArgument(
+            "joint_feedback_monitor_torque_abs",
+            default_value="10.0",
+            description="Initial symmetric torque plot range in Nm.",
+        ),
+        DeclareLaunchArgument(
             "joint_feedback_monitor_csv_enabled",
             default_value="false",
             description="Write joint feedback monitor samples to CSV.",
@@ -401,6 +477,7 @@ def common_bringup_launch_arguments(
 
     return (
         hardware_args
+        + stm32_args
         + gripper_args
         + dynamics_args
         + joint_feedback_monitor_args
@@ -427,6 +504,13 @@ def robot_description_mappings():
         "aux_joint_min": LaunchConfiguration("aux_joint_min"),
         "aux_joint_max": LaunchConfiguration("aux_joint_max"),
         "arm_command_frame_format": LaunchConfiguration("arm_command_frame_format"),
+        "stm32_control_mode": LaunchConfiguration("stm32_control_mode"),
+        "stm32_kp": LaunchConfiguration("stm32_kp"),
+        "stm32_kd": LaunchConfiguration("stm32_kd"),
+        "stm32_heartbeat_duration_sec": LaunchConfiguration("stm32_heartbeat_duration_sec"),
+        "stm32_trigger_duration_sec": LaunchConfiguration("stm32_trigger_duration_sec"),
+        "stm32_feedback_wait_timeout_sec": LaunchConfiguration("stm32_feedback_wait_timeout_sec"),
+        "enable_stm32_zero_trigger": LaunchConfiguration("enable_stm32_zero_trigger"),
         "enable_dynamics_feedforward": LaunchConfiguration("enable_dynamics_feedforward"),
         "dynamics_mode": LaunchConfiguration("dynamics_mode"),
         "dynamics_urdf_path": LaunchConfiguration("dynamics_urdf_path"),

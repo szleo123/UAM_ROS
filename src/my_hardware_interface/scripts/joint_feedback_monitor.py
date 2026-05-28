@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import csv
+import math
 import threading
 from collections import deque
 from pathlib import Path
@@ -25,6 +26,14 @@ def _parse_csv(value, cast=str):
     return [cast(item.strip()) for item in text.split(",") if item.strip()]
 
 
+def _finite_or_nan(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return math.nan
+    return value if math.isfinite(value) else math.nan
+
+
 class JointFeedbackMonitor(Node):
     def __init__(self):
         super().__init__("joint_feedback_monitor")
@@ -33,6 +42,7 @@ class JointFeedbackMonitor(Node):
         self.declare_parameter("joint_names", "joint_1,joint_2,joint_3,joint_4,joint_5,joint_6")
         self.declare_parameter("joint_state_topic", "/joint_states")
         self.declare_parameter("controller_state_topic", "/arm_controller/controller_state")
+        self.declare_parameter("torque_reference_topic", "/my_arm_system/dynamics_tau_ff_nm")
         self.declare_parameter("output_error_topic", "/arm_joint_feedback/error_rad")
         self.declare_parameter("rate_hz", 50.0, dynamic_param)
         self.declare_parameter("state_timeout_sec", 0.5, dynamic_param)
@@ -41,6 +51,8 @@ class JointFeedbackMonitor(Node):
         self.declare_parameter("plot_rate_hz", 10.0, dynamic_param)
         self.declare_parameter("plot_min_rad", -1.0, dynamic_param)
         self.declare_parameter("plot_max_rad", 1.0, dynamic_param)
+        self.declare_parameter("plot_velocity_abs", 2.0, dynamic_param)
+        self.declare_parameter("plot_torque_abs", 5.0, dynamic_param)
         self.declare_parameter("csv_enabled", False, dynamic_param)
         self.declare_parameter("csv_file", "/tmp/joint_monitor.csv")
         self.declare_parameter("csv_append", False, dynamic_param)
@@ -54,20 +66,30 @@ class JointFeedbackMonitor(Node):
         self.plot_max_rad = float(self.get_parameter("plot_max_rad").value)
         if self.plot_min_rad > self.plot_max_rad:
             self.plot_min_rad, self.plot_max_rad = self.plot_max_rad, self.plot_min_rad
+        self.plot_velocity_abs = abs(float(self.get_parameter("plot_velocity_abs").value))
+        self.plot_torque_abs = abs(float(self.get_parameter("plot_torque_abs").value))
         self.csv_enabled = bool(self.get_parameter("csv_enabled").value)
         self.csv_path = Path(str(self.get_parameter("csv_file").value))
         self.csv_append = bool(self.get_parameter("csv_append").value)
 
         self.state_lock = threading.Lock()
-        self.latest_feedback = None
-        self.latest_reference = None
+        self.latest = {
+            "position_feedback": None,
+            "position_reference": None,
+            "velocity_feedback": None,
+            "velocity_reference": None,
+            "torque_feedback": None,
+            "torque_reference": None,
+        }
         self.latest_state_time = None
         self.latest_reference_time = None
+        self.latest_torque_reference_time = None
 
         self.times = deque()
-        self.feedback_history = deque()
-        self.reference_history = deque()
-        self.error_history = deque()
+        self.history = {key: deque() for key in self.latest}
+        self.history["position_error"] = deque()
+        self.history["velocity_error"] = deque()
+        self.history["torque_error"] = deque()
 
         self.error_pub = self.create_publisher(
             Float64MultiArray, str(self.get_parameter("output_error_topic").value), 10
@@ -83,6 +105,12 @@ class JointFeedbackMonitor(Node):
             str(self.get_parameter("controller_state_topic").value),
             self._on_controller_state,
             20,
+        )
+        self.create_subscription(
+            Float64MultiArray,
+            str(self.get_parameter("torque_reference_topic").value),
+            self._on_torque_reference,
+            10,
         )
 
         if self.csv_enabled:
@@ -112,7 +140,19 @@ class JointFeedbackMonitor(Node):
         self.csv_writer = csv.writer(self.csv_file)
         if not self.csv_append or not file_exists:
             self.csv_writer.writerow(
-                ["timestamp_sec", "joint_name", "feedback_rad", "reference_rad", "error_rad"]
+                [
+                    "timestamp_sec",
+                    "joint_name",
+                    "position_feedback_rad",
+                    "position_reference_rad",
+                    "position_error_rad",
+                    "velocity_feedback_rad_s",
+                    "velocity_reference_rad_s",
+                    "velocity_error_rad_s",
+                    "torque_feedback_nm",
+                    "torque_reference_nm",
+                    "torque_error_nm",
+                ]
             )
             self.csv_file.flush()
 
@@ -127,135 +167,260 @@ class JointFeedbackMonitor(Node):
         self.plt = plt
         plt.ion()
         rows = len(self.joint_names)
-        self.fig, axes = plt.subplots(rows, 1, sharex=True, figsize=(9, max(5, 1.8 * rows)))
-        self.axes = np.atleast_1d(axes)
-        self.feedback_lines = []
-        self.reference_lines = []
-        self.error_lines = []
-        for ax, name in zip(self.axes, self.joint_names):
-            feedback_line, = ax.plot([], [], label="feedback", color="tab:blue")
-            reference_line, = ax.plot([], [], label="reference", color="tab:orange")
-            error_line, = ax.plot([], [], label="error", color="tab:red", alpha=0.45)
-            ax.set_ylabel(name)
-            ax.grid(True)
-            ax.set_ylim(self.plot_min_rad, self.plot_max_rad)
-            self.feedback_lines.append(feedback_line)
-            self.reference_lines.append(reference_line)
-            self.error_lines.append(error_line)
-        self.axes[-1].set_xlabel("time [s]")
-        self.axes[0].legend(loc="upper right")
+        self.fig, axes = plt.subplots(
+            rows, 3, sharex=True, figsize=(14, max(6, 1.8 * rows)), squeeze=False
+        )
+        self.axes = axes
+        self.lines = {}
+        columns = [
+            ("position", "position [rad]", (self.plot_min_rad, self.plot_max_rad)),
+            ("velocity", "velocity [rad/s]", (-self.plot_velocity_abs, self.plot_velocity_abs)),
+            ("torque", "torque [Nm]", (-self.plot_torque_abs, self.plot_torque_abs)),
+        ]
+
+        for row, name in enumerate(self.joint_names):
+            for col, (kind, ylabel, ylim) in enumerate(columns):
+                ax = self.axes[row][col]
+                feedback_line, = ax.plot([], [], label="feedback", color="tab:blue")
+                reference_line, = ax.plot([], [], label="reference", color="tab:orange")
+                error_line, = ax.plot([], [], label="error", color="tab:red", alpha=0.45)
+                self.lines[(kind, row, "feedback")] = feedback_line
+                self.lines[(kind, row, "reference")] = reference_line
+                self.lines[(kind, row, "error")] = error_line
+                ax.grid(True)
+                ax.set_ylim(*ylim)
+                if row == 0:
+                    ax.set_title(kind)
+                if col == 0:
+                    ax.set_ylabel(name)
+                if col == 2:
+                    ax.yaxis.set_label_position("right")
+                    ax.set_ylabel(ylabel)
+        self.axes[-1][0].set_xlabel("time [s]")
+        self.axes[-1][1].set_xlabel("time [s]")
+        self.axes[-1][2].set_xlabel("time [s]")
+        self.axes[0][0].legend(loc="upper right")
         self.fig.canvas.manager.set_window_title("Arm joint feedback monitor")
         self.fig.tight_layout()
         self.fig.show()
 
-    def _on_joint_state(self, msg):
-        positions = {}
+    def _array_from_joint_state(self, msg, field_name):
+        values = getattr(msg, field_name)
+        lookup = {}
         for i, name in enumerate(msg.name):
-            if i < len(msg.position):
-                positions[name] = msg.position[i]
-        if not all(name in positions for name in self.joint_names):
-            return
+            if i < len(values):
+                lookup[name] = values[i]
+        if not all(name in lookup for name in self.joint_names):
+            return None
+        return np.array([_finite_or_nan(lookup[name]) for name in self.joint_names], dtype=float)
 
-        feedback = np.array([float(positions[name]) for name in self.joint_names])
+    def _on_joint_state(self, msg):
+        position = self._array_from_joint_state(msg, "position")
+        if position is None:
+            return
+        velocity = self._array_from_joint_state(msg, "velocity")
+        effort = self._array_from_joint_state(msg, "effort")
+        now = self.get_clock().now()
         with self.state_lock:
-            self.latest_feedback = feedback
-            self.latest_state_time = self.get_clock().now()
+            self.latest["position_feedback"] = position
+            self.latest["velocity_feedback"] = velocity
+            self.latest["torque_feedback"] = effort
+            self.latest_state_time = now
+
+    def _array_from_controller_field(self, joint_names, values):
+        lookup = {}
+        for i, name in enumerate(joint_names):
+            if i < len(values):
+                lookup[name] = values[i]
+        if not all(name in lookup for name in self.joint_names):
+            return None
+        return np.array([_finite_or_nan(lookup[name]) for name in self.joint_names], dtype=float)
 
     def _on_controller_state(self, msg):
-        if not msg.joint_names or len(msg.reference.positions) < len(msg.joint_names):
+        if not msg.joint_names:
             return
-        references = {}
-        feedback = {}
-        for i, name in enumerate(msg.joint_names):
-            if i < len(msg.reference.positions):
-                references[name] = msg.reference.positions[i]
-            if i < len(msg.feedback.positions):
-                feedback[name] = msg.feedback.positions[i]
+        ref_pos = self._array_from_controller_field(msg.joint_names, msg.reference.positions)
+        fb_pos = self._array_from_controller_field(msg.joint_names, msg.feedback.positions)
+        ref_vel = self._array_from_controller_field(msg.joint_names, msg.reference.velocities)
+        fb_vel = self._array_from_controller_field(msg.joint_names, msg.feedback.velocities)
 
+        now = self.get_clock().now()
         with self.state_lock:
-            if all(name in references for name in self.joint_names):
-                self.latest_reference = np.array(
-                    [float(references[name]) for name in self.joint_names]
-                )
-                self.latest_reference_time = self.get_clock().now()
-            if all(name in feedback for name in self.joint_names):
-                self.latest_feedback = np.array(
-                    [float(feedback[name]) for name in self.joint_names]
-                )
-                self.latest_state_time = self.get_clock().now()
+            if ref_pos is not None:
+                self.latest["position_reference"] = ref_pos
+                self.latest_reference_time = now
+            if ref_vel is not None:
+                self.latest["velocity_reference"] = ref_vel
+                self.latest_reference_time = now
+            if fb_pos is not None:
+                self.latest["position_feedback"] = fb_pos
+                self.latest_state_time = now
+            if fb_vel is not None:
+                self.latest["velocity_feedback"] = fb_vel
+                self.latest_state_time = now
+
+    def _on_torque_reference(self, msg):
+        if len(msg.data) < len(self.joint_names):
+            return
+        reference = np.array(
+            [_finite_or_nan(value) for value in msg.data[: len(self.joint_names)]],
+            dtype=float,
+        )
+        with self.state_lock:
+            self.latest["torque_reference"] = reference
+            self.latest_torque_reference_time = self.get_clock().now()
+
+    def _fresh_or_none(self, value, timestamp, now):
+        if value is None or timestamp is None:
+            return None
+        age = (now - timestamp).nanoseconds * 1e-9
+        return value.copy() if age <= self.state_timeout_sec else None
 
     def _sample(self):
         now = self.get_clock().now()
         stamp = now.nanoseconds * 1e-9
         with self.state_lock:
-            feedback = None if self.latest_feedback is None else self.latest_feedback.copy()
-            reference = None if self.latest_reference is None else self.latest_reference.copy()
+            latest = {key: None if value is None else value.copy() for key, value in self.latest.items()}
             state_time = self.latest_state_time
             reference_time = self.latest_reference_time
+            torque_reference_time = self.latest_torque_reference_time
 
-        if feedback is None or state_time is None:
-            return
-        state_age = (now - state_time).nanoseconds * 1e-9
-        if state_age > self.state_timeout_sec:
-            self.get_logger().warn(
-                f"Joint feedback is stale ({state_age:.3f}s); skipping sample.",
-                throttle_duration_sec=2.0,
-            )
+        position_feedback = self._fresh_or_none(latest["position_feedback"], state_time, now)
+        if position_feedback is None:
             return
 
-        if reference is None or reference_time is None:
-            reference = feedback.copy()
-        else:
-            reference_age = (now - reference_time).nanoseconds * 1e-9
-            if reference_age > self.state_timeout_sec:
-                reference = feedback.copy()
+        position_reference = self._fresh_or_none(latest["position_reference"], reference_time, now)
+        velocity_feedback = self._fresh_or_none(latest["velocity_feedback"], state_time, now)
+        velocity_reference = self._fresh_or_none(latest["velocity_reference"], reference_time, now)
+        torque_feedback = self._fresh_or_none(latest["torque_feedback"], state_time, now)
+        torque_reference = self._fresh_or_none(latest["torque_reference"], torque_reference_time, now)
 
-        error = reference - feedback
-        self._publish_error(error)
-        self._record_sample(stamp, feedback, reference, error)
+        zero = np.zeros(len(self.joint_names), dtype=float)
+        position_reference = position_feedback.copy() if position_reference is None else position_reference
+        velocity_feedback = zero.copy() if velocity_feedback is None else velocity_feedback
+        velocity_reference = velocity_feedback.copy() if velocity_reference is None else velocity_reference
+        torque_feedback = zero.copy() if torque_feedback is None else torque_feedback
+        torque_reference = zero.copy() if torque_reference is None else torque_reference
+
+        position_error = position_reference - position_feedback
+        velocity_error = velocity_reference - velocity_feedback
+        torque_error = torque_reference - torque_feedback
+
+        self._publish_error(position_error)
+        self._record_sample(
+            stamp,
+            position_feedback,
+            position_reference,
+            position_error,
+            velocity_feedback,
+            velocity_reference,
+            velocity_error,
+            torque_feedback,
+            torque_reference,
+            torque_error,
+        )
 
     def _publish_error(self, error):
         msg = Float64MultiArray()
         msg.data = [float(value) for value in error]
         self.error_pub.publish(msg)
 
-    def _record_sample(self, stamp, feedback, reference, error):
+    def _record_sample(
+        self,
+        stamp,
+        position_feedback,
+        position_reference,
+        position_error,
+        velocity_feedback,
+        velocity_reference,
+        velocity_error,
+        torque_feedback,
+        torque_reference,
+        torque_error,
+    ):
+        samples = {
+            "position_feedback": position_feedback,
+            "position_reference": position_reference,
+            "position_error": position_error,
+            "velocity_feedback": velocity_feedback,
+            "velocity_reference": velocity_reference,
+            "velocity_error": velocity_error,
+            "torque_feedback": torque_feedback,
+            "torque_reference": torque_reference,
+            "torque_error": torque_error,
+        }
         self.times.append(stamp)
-        self.feedback_history.append(feedback.copy())
-        self.reference_history.append(reference.copy())
-        self.error_history.append(error.copy())
+        for key, value in samples.items():
+            self.history[key].append(value.copy())
         cutoff = stamp - self.plot_history_sec
         while self.times and self.times[0] < cutoff:
             self.times.popleft()
-            self.feedback_history.popleft()
-            self.reference_history.popleft()
-            self.error_history.popleft()
+            for history in self.history.values():
+                history.popleft()
 
         if self.csv_writer:
-            for name, fb, ref, err in zip(self.joint_names, feedback, reference, error):
-                self.csv_writer.writerow([f"{stamp:.6f}", name, f"{fb:.6f}", f"{ref:.6f}", f"{err:.6f}"])
+            for i, name in enumerate(self.joint_names):
+                self.csv_writer.writerow(
+                    [
+                        f"{stamp:.6f}",
+                        name,
+                        f"{position_feedback[i]:.6f}",
+                        f"{position_reference[i]:.6f}",
+                        f"{position_error[i]:.6f}",
+                        f"{velocity_feedback[i]:.6f}",
+                        f"{velocity_reference[i]:.6f}",
+                        f"{velocity_error[i]:.6f}",
+                        f"{torque_feedback[i]:.6f}",
+                        f"{torque_reference[i]:.6f}",
+                        f"{torque_error[i]:.6f}",
+                    ]
+                )
             self.csv_file.flush()
+
+    def _stack_history(self, key):
+        return np.vstack(self.history[key]) if self.history[key] else None
+
+    def _set_lines(self, kind, row, x, feedback, reference, error):
+        self.lines[(kind, row, "feedback")].set_data(x, feedback[:, row])
+        self.lines[(kind, row, "reference")].set_data(x, reference[:, row])
+        self.lines[(kind, row, "error")].set_data(x, error[:, row])
+
+    def _update_axis_limits(self, ax, values, fallback):
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            ax.set_ylim(*fallback)
+            return
+        lo = min(fallback[0], float(np.min(finite)) - 0.05)
+        hi = max(fallback[1], float(np.max(finite)) + 0.05)
+        if hi - lo < 1e-3:
+            hi += 0.1
+            lo -= 0.1
+        ax.set_ylim(lo, hi)
 
     def _update_plot(self):
         if not self.plot_enabled or not self.times:
             return
         times = np.array(self.times)
-        feedback = np.vstack(self.feedback_history)
-        reference = np.vstack(self.reference_history)
-        error = np.vstack(self.error_history)
         x = times - times[-1]
-        for i in range(len(self.joint_names)):
-            self.feedback_lines[i].set_data(x, feedback[:, i])
-            self.reference_lines[i].set_data(x, reference[:, i])
-            self.error_lines[i].set_data(x, error[:, i])
-            self.axes[i].set_xlim(-self.plot_history_sec, 0.0)
-            values = np.concatenate([feedback[:, i], reference[:, i]])
-            lo = min(self.plot_min_rad, float(np.min(values)) - 0.05)
-            hi = max(self.plot_max_rad, float(np.max(values)) + 0.05)
-            if hi - lo < 1e-3:
-                hi += 0.1
-                lo -= 0.1
-            self.axes[i].set_ylim(lo, hi)
+        data = {key: self._stack_history(key) for key in self.history}
+        if any(value is None for value in data.values()):
+            return
+
+        fallbacks = {
+            "position": (self.plot_min_rad, self.plot_max_rad),
+            "velocity": (-self.plot_velocity_abs, self.plot_velocity_abs),
+            "torque": (-self.plot_torque_abs, self.plot_torque_abs),
+        }
+        for row in range(len(self.joint_names)):
+            for col, kind in enumerate(("position", "velocity", "torque")):
+                feedback = data[f"{kind}_feedback"]
+                reference = data[f"{kind}_reference"]
+                error = data[f"{kind}_error"]
+                self._set_lines(kind, row, x, feedback, reference, error)
+                ax = self.axes[row][col]
+                ax.set_xlim(-self.plot_history_sec, 0.0)
+                values = np.concatenate([feedback[:, row], reference[:, row], error[:, row]])
+                self._update_axis_limits(ax, values, fallbacks[kind])
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
 

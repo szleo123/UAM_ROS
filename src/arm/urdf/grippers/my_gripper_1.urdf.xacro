@@ -104,8 +104,8 @@
     <limit
       lower="${tool_joint_min}"
       upper="${tool_joint_max}"
-      effort="0"
-      velocity="0" />
+      effort="20"
+      velocity="2.0" />
   </joint>
   </xacro:macro>
 </robot>

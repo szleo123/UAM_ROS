@@ -179,6 +179,8 @@ def generate_launch_description():
                 "plot_rate_hz": LaunchConfiguration("joint_feedback_monitor_rate_hz"),
                 "plot_min_rad": LaunchConfiguration("joint_feedback_monitor_min_rad"),
                 "plot_max_rad": LaunchConfiguration("joint_feedback_monitor_max_rad"),
+                "plot_velocity_abs": LaunchConfiguration("joint_feedback_monitor_velocity_abs"),
+                "plot_torque_abs": LaunchConfiguration("joint_feedback_monitor_torque_abs"),
                 "csv_enabled": LaunchConfiguration("joint_feedback_monitor_csv_enabled"),
                 "csv_file": LaunchConfiguration("joint_feedback_monitor_csv_file"),
                 "csv_append": LaunchConfiguration("joint_feedback_monitor_csv_append"),

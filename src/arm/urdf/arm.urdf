@@ -59,7 +59,7 @@
     <parent link="base_link"/>
     <child link="link_1"/>
     <axis xyz="0 0 1"/>
-    <limit effort="0" lower="-3.1416" upper="3.1416" velocity="0"/>
+    <limit effort="100" lower="-3.1416" upper="3.1416" velocity="2.0"/>
   </joint>
   <link name="link_2">
     <inertial>
@@ -88,7 +88,7 @@
     <parent link="link_1"/>
     <child link="link_2"/>
     <axis xyz="0 0 1"/>
-    <limit effort="0" lower="0" upper="3.1416" velocity="0"/>
+    <limit effort="100" lower="0" upper="3.1416" velocity="2.0"/>
   </joint>
   <link name="link_3">
     <inertial>
@@ -117,7 +117,7 @@
     <parent link="link_2"/>
     <child link="link_3"/>
     <axis xyz="0 0 1"/>
-    <limit effort="0" lower="-3.1416" upper="0" velocity="0"/>
+    <limit effort="100" lower="-3.1416" upper="0" velocity="2.0"/>
   </joint>
   <link name="link_4">
     <inertial>
@@ -146,7 +146,7 @@
     <parent link="link_3"/>
     <child link="link_4"/>
     <axis xyz="0 0 -1"/>
-    <limit effort="0" lower="-3.1416" upper="3.1416" velocity="0"/>
+    <limit effort="100" lower="-3.1416" upper="3.1416" velocity="2.0"/>
   </joint>
   <link name="link_5">
     <inertial>
@@ -175,7 +175,7 @@
     <parent link="link_4"/>
     <child link="link_5"/>
     <axis xyz="0 0 -1"/>
-    <limit effort="0" lower="0" upper="3.1416" velocity="0"/>
+    <limit effort="100" lower="0" upper="3.1416" velocity="2.0"/>
   </joint>
   <link name="link_6">
     <inertial>
@@ -204,7 +204,7 @@
     <parent link="link_5"/>
     <child link="link_6"/>
     <axis xyz="0 0 1"/>
-    <limit effort="0" lower="-3.1416" upper="3.1416" velocity="0"/>
+    <limit effort="100" lower="-3.1416" upper="3.1416" velocity="2.0"/>
   </joint>
   <!-- Stable TCP frame for MoveIt, RViz, and tracker nodes. -->
   <link name="tool0"/>
@@ -267,6 +267,6 @@
     <parent link="tool_base"/>
     <child link="tool_link"/>
     <axis xyz="0 0 1"/>
-    <limit effort="0" lower="-0.69" upper="0.0" velocity="0"/>
+    <limit effort="20" lower="-0.69" upper="0.0" velocity="2.0"/>
   </joint>
 </robot>

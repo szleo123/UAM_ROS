@@ -2,7 +2,7 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="arm">
     <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
     <xacro:arg name="use_fake_hardware" default="true" />
-    <xacro:arg name="serial_port" default="/dev/ttyUSB4" />
+    <xacro:arg name="serial_port" default="/dev/ttyACM0" />
     <xacro:arg name="reader_port" default="/dev/ttyUSB5" />
     <xacro:arg name="gripper_port" default="/dev/ttyUSB6" />
     <xacro:arg name="baudrate" default="230400" />
@@ -16,6 +16,13 @@
     <xacro:arg name="aux_joint_min" default="-0.69" />
     <xacro:arg name="aux_joint_max" default="0.0" />
     <xacro:arg name="arm_command_frame_format" default="legacy_position" />
+    <xacro:arg name="stm32_control_mode" default="0" />
+    <xacro:arg name="stm32_kp" default="50,50,50,50,50,50" />
+    <xacro:arg name="stm32_kd" default="2,2,2,2,2,2" />
+    <xacro:arg name="stm32_heartbeat_duration_sec" default="1.0" />
+    <xacro:arg name="stm32_trigger_duration_sec" default="3.0" />
+    <xacro:arg name="stm32_feedback_wait_timeout_sec" default="2.0" />
+    <xacro:arg name="enable_stm32_zero_trigger" default="false" />
     <xacro:arg name="enable_dynamics_feedforward" default="false" />
     <xacro:arg name="dynamics_mode" default="gravity" />
     <xacro:arg name="dynamics_urdf_path" default="" />
@@ -82,6 +89,13 @@
       aux_joint_min="$(arg aux_joint_min)"
       aux_joint_max="$(arg aux_joint_max)"
       arm_command_frame_format="$(arg arm_command_frame_format)"
+      stm32_control_mode="$(arg stm32_control_mode)"
+      stm32_kp="$(arg stm32_kp)"
+      stm32_kd="$(arg stm32_kd)"
+      stm32_heartbeat_duration_sec="$(arg stm32_heartbeat_duration_sec)"
+      stm32_trigger_duration_sec="$(arg stm32_trigger_duration_sec)"
+      stm32_feedback_wait_timeout_sec="$(arg stm32_feedback_wait_timeout_sec)"
+      enable_stm32_zero_trigger="$(arg enable_stm32_zero_trigger)"
       enable_dynamics_feedforward="$(arg enable_dynamics_feedforward)"
       dynamics_mode="$(arg dynamics_mode)"
       dynamics_urdf_path="$(arg dynamics_urdf_path)"

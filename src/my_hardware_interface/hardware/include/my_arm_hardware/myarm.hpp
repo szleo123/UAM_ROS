@@ -15,6 +15,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -112,6 +113,13 @@ private:
     FULL = 2,
   };
 
+  enum class Stm32ControlMode : uint8_t
+  {
+    POSITION_ONLY = 0,
+    POSITION_TORQUE = 1,
+    FULL_MIT = 2,
+  };
+
   // Parameters for the Serial communications 
   std::string serial_port_path_ {"/dev/ttyUSB0"};
   std::string reader_port_path_ {"/dev/ttyUSB1"};
@@ -123,6 +131,13 @@ private:
   std::array<double, 6> arm_joint_signs_ {{1.0, 1.0, -1.0, 1.0, 1.0, 1.0}};
   std::array<double, 6> arm_joint_offsets_ {{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
   double hw_slowdown_; // low-pass factor if no feedback 
+  Stm32ControlMode stm32_control_mode_{Stm32ControlMode::POSITION_ONLY};
+  std::array<double, 6> stm32_kp_{{50.0, 50.0, 50.0, 50.0, 50.0, 50.0}};
+  std::array<double, 6> stm32_kd_{{2.0, 2.0, 2.0, 2.0, 2.0, 2.0}};
+  double stm32_heartbeat_duration_sec_{1.0};
+  double stm32_trigger_duration_sec_{3.0};
+  double stm32_feedback_wait_timeout_sec_{2.0};
+  bool enable_stm32_zero_trigger_{false};
 
   ArmCommandFrameFormat arm_command_frame_format_{ArmCommandFrameFormat::LEGACY_POSITION};
   bool enable_dynamics_feedforward_{false};
@@ -159,6 +174,7 @@ private:
   std::vector<double> hw_commands_;
   std::vector<double> hw_states_;
   std::vector<double> hw_velocities_;
+  std::vector<double> hw_efforts_;
   
   // LibSerial for read() and write()
   LibSerial::SerialPort serial_;
@@ -222,14 +238,27 @@ private:
   bool has_aux_joint() const;
   size_t aux_joint_index() const;
   void parse_dynamics_parameters();
+  void parse_stm32_parameters();
   void initialize_dynamics_model();
   std::array<double, 6> compute_dynamics_torques(const rclcpp::Duration & period);
   void publish_dynamics_torques(const std::array<double, 6> & tau_ros_nm);
   std::vector<uint8_t> build_position_command_frame();
   std::vector<uint8_t> build_position_torque_command_frame(const std::array<double, 6> & tau_hw_nm);
+  std::vector<uint8_t> build_stm32_command_frame(
+    uint8_t mode,
+    const std::array<double, 6> & tau_hw_nm,
+    bool zero_payload = false);
+  std::vector<uint8_t> build_stm32_trigger_frame();
+  bool send_stm32_frame(const std::vector<uint8_t> & frame);
+  bool pump_stm32_boot_phase(
+    const std::vector<uint8_t> & frame,
+    double duration_sec,
+    const std::string & phase_name);
+  bool wait_for_stm32_feedback_and_sync(double timeout_sec);
   void setup_homing_interface();
   void teardown_homing_interface();
   void publish_homing_state(RosMasterHomingState state, const std::string & message);
+  void publish_stm32_sys_state(uint8_t sys_state);
   void handle_system_event(uint8_t event_code);
   bool send_system_command(uint8_t command_code, std::string & failure_reason);
   bool start_damiao_initialization(const std::string & source, std::string & message);
@@ -244,6 +273,7 @@ private:
   std::thread homing_spin_thread_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr homing_status_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr homing_state_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr stm32_sys_state_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr dynamics_tau_pub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr dynamics_tau_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr homing_init_sub_;
@@ -252,6 +282,8 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr homing_confirm_srv_;
   std::mutex homing_state_mtx_;
   RosMasterHomingState homing_state_{RosMasterHomingState::WAITING_INIT_COMMAND};
+  uint8_t last_stm32_sys_state_{std::numeric_limits<uint8_t>::max()};
+  std::atomic_bool stm32_homing_trigger_active_{false};
   bool sync_commands_on_next_feedback_{false};
   std::mutex command_hold_mtx_;
   std::vector<double> post_homing_hold_commands_;

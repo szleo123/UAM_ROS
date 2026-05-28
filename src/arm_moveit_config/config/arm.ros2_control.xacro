@@ -2,7 +2,7 @@
 
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
     <xacro:arg name="use_fake_hardware" default="true"/>
-    <xacro:arg name="serial_port" default="/dev/ttyUSB4"/>
+    <xacro:arg name="serial_port" default="/dev/ttyACM0"/>
     <xacro:arg name="reader_port" default="/dev/ttyUSB5"/>
     <xacro:arg name="gripper_port" default="/dev/ttyUSB6"/>
     <xacro:arg name="baudrate" default="230400"/>
@@ -16,6 +16,13 @@
     <xacro:arg name="aux_joint_min" default="-0.69"/>
     <xacro:arg name="aux_joint_max" default="0.0"/>
     <xacro:arg name="arm_command_frame_format" default="legacy_position"/>
+    <xacro:arg name="stm32_control_mode" default="0"/>
+    <xacro:arg name="stm32_kp" default="50,50,50,50,50,50"/>
+    <xacro:arg name="stm32_kd" default="2,2,2,2,2,2"/>
+    <xacro:arg name="stm32_heartbeat_duration_sec" default="1.0"/>
+    <xacro:arg name="stm32_trigger_duration_sec" default="3.0"/>
+    <xacro:arg name="stm32_feedback_wait_timeout_sec" default="2.0"/>
+    <xacro:arg name="enable_stm32_zero_trigger" default="false"/>
     <xacro:arg name="enable_dynamics_feedforward" default="false"/>
     <xacro:arg name="dynamics_mode" default="gravity"/>
     <xacro:arg name="dynamics_urdf_path" default=""/>
@@ -37,6 +44,7 @@
                 <param name="initial_value">${initial_value}</param>
             </state_interface>
             <state_interface name="velocity"/>
+            <state_interface name="effort"/>
         </joint>
     </xacro:macro>
 
@@ -44,7 +52,7 @@
         name
         initial_positions_file
         use_fake_hardware:=true
-        serial_port:='/dev/ttyUSB4'
+        serial_port:='/dev/ttyACM0'
         reader_port:='/dev/ttyUSB5'
         gripper_port:='/dev/ttyUSB6'
         baudrate:='230400'
@@ -58,6 +66,13 @@
         aux_joint_min:='-0.69'
         aux_joint_max:='0.0'
         arm_command_frame_format:='legacy_position'
+        stm32_control_mode:='0'
+        stm32_kp:='50,50,50,50,50,50'
+        stm32_kd:='2,2,2,2,2,2'
+        stm32_heartbeat_duration_sec:='1.0'
+        stm32_trigger_duration_sec:='3.0'
+        stm32_feedback_wait_timeout_sec:='2.0'
+        enable_stm32_zero_trigger:='false'
         enable_dynamics_feedforward:='false'
         dynamics_mode:='gravity'
         dynamics_urdf_path:=''
@@ -92,6 +107,13 @@
                     <param name="aux_joint_min">${aux_joint_min}</param>
                     <param name="aux_joint_max">${aux_joint_max}</param>
                     <param name="arm_command_frame_format">${arm_command_frame_format}</param>
+                    <param name="stm32_control_mode">${stm32_control_mode}</param>
+                    <param name="stm32_kp">${stm32_kp}</param>
+                    <param name="stm32_kd">${stm32_kd}</param>
+                    <param name="stm32_heartbeat_duration_sec">${stm32_heartbeat_duration_sec}</param>
+                    <param name="stm32_trigger_duration_sec">${stm32_trigger_duration_sec}</param>
+                    <param name="stm32_feedback_wait_timeout_sec">${stm32_feedback_wait_timeout_sec}</param>
+                    <param name="enable_stm32_zero_trigger">${enable_stm32_zero_trigger}</param>
                     <param name="enable_dynamics_feedforward">${enable_dynamics_feedforward}</param>
                     <param name="dynamics_mode">${dynamics_mode}</param>
                     <param name="dynamics_urdf_path">${dynamics_urdf_path}</param>
