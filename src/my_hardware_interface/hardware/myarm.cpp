@@ -18,9 +18,13 @@
 #include <chrono>
 #include <cctype>
 #include <cstdio>
+#include <ctime>
 #include <cstring>
+#include <filesystem>
+#include <iomanip>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -69,6 +73,11 @@ constexpr const char * kHomingInitService = "/arm_homing/start_initialization";
 constexpr const char * kHomingInitTopic = "/arm_homing/start_initialization";
 constexpr const char * kHomingConfirmService = "/arm_homing/confirm_drop_pose";
 constexpr const char * kHomingConfirmTopic = "/arm_homing/reached_drop_pose";
+constexpr const char * kStm32MitGainsCommandTopic = "/my_arm_system/stm32_mit_gains_cmd";
+constexpr const char * kStm32MitGainsCurrentTopic = "/my_arm_system/stm32_mit_gains_current";
+constexpr const char * kStm32ControlModeTopic = "/my_arm_system/stm32_control_mode";
+constexpr double kStm32MaxLiveKp = 1000.0;
+constexpr double kStm32MaxLiveKd = 100.0;
 
 double safe_period_seconds(const rclcpp::Duration & period)
 {
@@ -352,6 +361,31 @@ static inline std::vector<std::string> split_list(const std::string &csv)
   return entries;
 }
 
+static inline std::string sanitize_filename_component(const std::string & text)
+{
+  std::string out;
+  out.reserve(text.size());
+  for (const char c : text)
+  {
+    if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.')
+      out.push_back(c);
+    else if (std::isspace(static_cast<unsigned char>(c)))
+      out.push_back('_');
+  }
+  return out;
+}
+
+static inline std::string local_timestamp_for_filename()
+{
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+  std::tm tm{};
+  localtime_r(&now_time, &tm);
+  std::ostringstream ss;
+  ss << std::put_time(&tm, "%Y%m%d_%H%M%S");
+  return ss.str();
+}
+
 static inline void append_i16_le(std::vector<uint8_t> & frame, int16_t value)
 {
   frame.push_back(static_cast<uint8_t>(value & 0xFF));
@@ -518,7 +552,7 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
   }
 
   RCLCPP_INFO(get_logger(),
-              "Initialized MyArmSystem with %i joints, arm_cdc_port=%s, baud=%u, scale=%.1f, slowdown=%.1f, first_power_on=%s, stm32_control_mode=%u, stm32_zero_trigger=%s, command_frame=%s, dynamics_feedforward=%s, dynamics_mode=%s, arm_joint_offsets=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
+              "Initialized MyArmSystem with %i joints, arm_cdc_port=%s, baud=%u, scale=%.1f, slowdown=%.1f, first_power_on=%s, stm32_control_mode=%u, stm32_zero_trigger=%s, command_frame=%s, dynamics_feedforward=%s, dynamics_mode=%s, arm_joint_offsets=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], dynamics_torque_scales=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
               static_cast<int>(info_.joints.size()), serial_port_path_.c_str(),
               baudrate_, pos_scale_, hw_slowdown_,
               first_power_on_ ? "true" : "false",
@@ -529,7 +563,10 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
               dynamics_mode_ == DynamicsMode::FULL ? "full" :
                 (dynamics_mode_ == DynamicsMode::CORIOLIS ? "coriolis" : "gravity"),
               arm_joint_offsets_[0], arm_joint_offsets_[1], arm_joint_offsets_[2],
-              arm_joint_offsets_[3], arm_joint_offsets_[4], arm_joint_offsets_[5]);
+              arm_joint_offsets_[3], arm_joint_offsets_[4], arm_joint_offsets_[5],
+              dynamics_torque_scales_[0], dynamics_torque_scales_[1],
+              dynamics_torque_scales_[2], dynamics_torque_scales_[3],
+              dynamics_torque_scales_[4], dynamics_torque_scales_[5]);
   setup_homing_interface();
   if (enable_dynamics_feedforward_)
     initialize_dynamics_model();
@@ -578,6 +615,7 @@ hardware_interface::CallbackReturn MyArmHardware::on_configure(
   reset_joint_buffers(0.0);
   rx_buffer_.clear();
   sync_commands_on_next_feedback_ = false;
+  open_stm32_trace();
   if (first_power_on_)
   {
     publish_homing_state(
@@ -802,6 +840,12 @@ hardware_interface::return_type MyArmHardware::read(
           hw_states_[0], hw_states_[1], hw_states_[2],
           hw_states_[3], hw_states_[4], hw_states_[5]);
       }
+      trace_stm32_sample(
+        "read",
+        last_stm32_write_mode_,
+        packet.sys_state,
+        last_tau_ros_nm_,
+        last_tau_hw_nm_);
     }
 
     if (!frame_received && initial_positions_received_ &&
@@ -882,6 +926,13 @@ hardware_interface::return_type MyArmHardware::write(
     {
       const auto safe_frame = build_stm32_command_frame(kStm32ModeSafeLock, std::array<double, 6>{}, true);
       (void)send_stm32_frame(safe_frame);
+      last_stm32_write_mode_ = kStm32ModeSafeLock;
+      trace_stm32_sample(
+        "safe_lock_motion_not_released",
+        kStm32ModeSafeLock,
+        last_stm32_sys_state_,
+        std::array<double, 6>{},
+        std::array<double, 6>{});
     }
     RCLCPP_WARN_THROTTLE(get_logger(), *clock_, 2000,
       "Motion not released yet; sending STM32 safe-lock heartbeat.");
@@ -923,6 +974,13 @@ hardware_interface::return_type MyArmHardware::write(
         age_ms);
       const auto safe_frame = build_stm32_command_frame(kStm32ModeSafeLock, std::array<double, 6>{}, true);
       (void)send_stm32_frame(safe_frame);
+      last_stm32_write_mode_ = kStm32ModeSafeLock;
+      trace_stm32_sample(
+        "safe_lock_wait_feedback",
+        kStm32ModeSafeLock,
+        last_stm32_sys_state_,
+        std::array<double, 6>{},
+        std::array<double, 6>{});
       return hardware_interface::return_type::OK;
     }
 
@@ -937,6 +995,8 @@ hardware_interface::return_type MyArmHardware::write(
         tau_hw_nm[i] = dynamics_torque_signs_[i] * tau_ros_nm[i];
       publish_dynamics_torques(tau_ros_nm);
     }
+    last_tau_ros_nm_ = tau_ros_nm;
+    last_tau_hw_nm_ = tau_hw_nm;
 
     const uint8_t mode =
       stm32_control_mode_ == Stm32ControlMode::FULL_MIT ? kStm32ModeFullMit :
@@ -946,6 +1006,8 @@ hardware_interface::return_type MyArmHardware::write(
 
     if (!send_stm32_frame(frame))
       return hardware_interface::return_type::OK;
+    last_stm32_write_mode_ = mode;
+    trace_stm32_sample("write", mode, last_stm32_sys_state_, tau_ros_nm, tau_hw_nm);
 
     if (arm_joint_count() >= kArmFeedbackJointCount)
     {
@@ -1009,6 +1071,7 @@ MyArmHardware::on_cleanup(const rclcpp_lifecycle::State & /*previous_state*/)
   }
 
   RCLCPP_INFO(get_logger(), "Cleanup complete.");
+  close_stm32_trace();
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
@@ -1091,6 +1154,22 @@ void MyArmHardware::parse_stm32_parameters()
   if (info_.hardware_parameters.count("enable_stm32_zero_trigger"))
     enable_stm32_zero_trigger_ =
       string_to_bool(info_.hardware_parameters.at("enable_stm32_zero_trigger"));
+
+  if (info_.hardware_parameters.count("stm32_trace_enabled"))
+    stm32_trace_enabled_ =
+      string_to_bool(info_.hardware_parameters.at("stm32_trace_enabled"));
+  if (info_.hardware_parameters.count("stm32_trace_directory"))
+    stm32_trace_directory_ = trim_copy(info_.hardware_parameters.at("stm32_trace_directory"));
+  if (info_.hardware_parameters.count("stm32_trace_run_label"))
+    stm32_trace_run_label_ = trim_copy(info_.hardware_parameters.at("stm32_trace_run_label"));
+  if (info_.hardware_parameters.count("stm32_trace_file"))
+    stm32_trace_file_ = trim_copy(info_.hardware_parameters.at("stm32_trace_file"));
+  if (info_.hardware_parameters.count("stm32_trace_append"))
+    stm32_trace_append_ =
+      string_to_bool(info_.hardware_parameters.at("stm32_trace_append"));
+  if (info_.hardware_parameters.count("stm32_trace_decimation"))
+    stm32_trace_decimation_ = std::max<size_t>(
+      1, static_cast<size_t>(std::stoul(info_.hardware_parameters.at("stm32_trace_decimation"))));
 }
 
 void MyArmHardware::parse_dynamics_parameters()
@@ -1137,7 +1216,19 @@ void MyArmHardware::parse_dynamics_parameters()
     dynamics_use_commanded_position_ =
       string_to_bool(info_.hardware_parameters.at("dynamics_use_commanded_position"));
   if (info_.hardware_parameters.count("dynamics_torque_scale"))
-    dynamics_torque_scale_ = std::stod(info_.hardware_parameters.at("dynamics_torque_scale"));
+  {
+    const auto scales = split_list(info_.hardware_parameters.at("dynamics_torque_scale"));
+    if (!scales.empty())
+    {
+      double fill_value = 1.0;
+      for (size_t i = 0; i < dynamics_torque_scales_.size(); ++i)
+      {
+        if (i < scales.size())
+          fill_value = std::stod(scales[i]);
+        dynamics_torque_scales_[i] = fill_value;
+      }
+    }
+  }
   if (info_.hardware_parameters.count("dynamics_torque_low_pass_alpha"))
     dynamics_torque_low_pass_alpha_ =
       std::stod(info_.hardware_parameters.at("dynamics_torque_low_pass_alpha"));
@@ -1344,7 +1435,7 @@ std::array<double, 6> MyArmHardware::compute_dynamics_torques(const rclcpp::Dura
       const int v_index = dynamics_joint_v_indices_[i];
       if (v_index < 0)
         continue;
-      double target = tau[v_index] * dynamics_torque_scale_;
+      double target = tau[v_index] * dynamics_torque_scales_[i];
       if (!std::isfinite(target))
       {
         RCLCPP_WARN_THROTTLE(get_logger(), *clock_, 1000,
@@ -1387,6 +1478,172 @@ void MyArmHardware::publish_dynamics_torques(const std::array<double, 6> & tau_r
   std_msgs::msg::Float64MultiArray msg;
   msg.data.assign(tau_ros_nm.begin(), tau_ros_nm.end());
   dynamics_tau_pub_->publish(msg);
+}
+
+void MyArmHardware::open_stm32_trace()
+{
+  std::lock_guard<std::mutex> lock(stm32_trace_mtx_);
+  if (!stm32_trace_enabled_)
+    return;
+  if (stm32_trace_stream_.is_open())
+    stm32_trace_stream_.close();
+
+  std::filesystem::path trace_path;
+  if (!stm32_trace_file_.empty())
+  {
+    trace_path = std::filesystem::path(stm32_trace_file_);
+  }
+  else
+  {
+    const std::filesystem::path trace_dir =
+      stm32_trace_directory_.empty() ?
+      std::filesystem::path("/tmp/arm_stm32_traces") :
+      std::filesystem::path(stm32_trace_directory_);
+    std::string stem = local_timestamp_for_filename();
+    const std::string label = sanitize_filename_component(stm32_trace_run_label_);
+    if (!label.empty())
+      stem += "_" + label;
+    trace_path = trace_dir / (stem + ".csv");
+    stm32_trace_file_ = trace_path.string();
+  }
+
+  if (trace_path.empty())
+  {
+    RCLCPP_WARN(get_logger(), "stm32_trace_enabled=true but trace path is empty; trace disabled.");
+    stm32_trace_enabled_ = false;
+    return;
+  }
+
+  try
+  {
+    if (trace_path.has_parent_path())
+      std::filesystem::create_directories(trace_path.parent_path());
+
+    const auto mode = stm32_trace_append_ ? std::ios::app : std::ios::trunc;
+    stm32_trace_stream_.open(trace_path, std::ios::out | mode);
+    if (!stm32_trace_stream_.is_open())
+      throw std::runtime_error("file could not be opened");
+
+    const bool write_header =
+      !stm32_trace_append_ || std::filesystem::file_size(trace_path) == 0;
+    if (write_header)
+    {
+      stm32_trace_stream_ << "time_sec,event,mode,sys_state,initial_positions_received,trigger_active";
+      for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+        stm32_trace_stream_ << ",cmd_j" << (i + 1);
+      for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+        stm32_trace_stream_ << ",fb_pos_j" << (i + 1);
+      for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+        stm32_trace_stream_ << ",err_pos_j" << (i + 1);
+      for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+        stm32_trace_stream_ << ",fb_vel_j" << (i + 1);
+      for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+        stm32_trace_stream_ << ",fb_tau_j" << (i + 1);
+      for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+        stm32_trace_stream_ << ",tau_ros_j" << (i + 1);
+      for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+        stm32_trace_stream_ << ",tau_hw_j" << (i + 1);
+      for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+        stm32_trace_stream_ << ",kp_j" << (i + 1);
+      for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+        stm32_trace_stream_ << ",kd_j" << (i + 1);
+      stm32_trace_stream_ << '\n';
+    }
+
+    stm32_trace_counter_ = 0;
+    RCLCPP_WARN(
+      get_logger(),
+      "STM32 run trace enabled: %s (append=%s, decimation=%zu)",
+      stm32_trace_file_.c_str(),
+      stm32_trace_append_ ? "true" : "false",
+      stm32_trace_decimation_);
+  }
+  catch (const std::exception & e)
+  {
+    RCLCPP_ERROR(
+      get_logger(),
+      "Failed to open STM32 trace file '%s': %s",
+      stm32_trace_file_.c_str(), e.what());
+    stm32_trace_enabled_ = false;
+  }
+}
+
+void MyArmHardware::close_stm32_trace()
+{
+  std::lock_guard<std::mutex> lock(stm32_trace_mtx_);
+  if (stm32_trace_stream_.is_open())
+    stm32_trace_stream_.close();
+}
+
+void MyArmHardware::trace_stm32_sample(
+  const std::string & event,
+  uint8_t mode,
+  uint8_t sys_state,
+  const std::array<double, 6> & tau_ros_nm,
+  const std::array<double, 6> & tau_hw_nm)
+{
+  if (!stm32_trace_enabled_)
+    return;
+
+  std::lock_guard<std::mutex> lock(stm32_trace_mtx_);
+  if (!stm32_trace_stream_.is_open())
+    return;
+  if ((stm32_trace_counter_++ % std::max<size_t>(1, stm32_trace_decimation_)) != 0)
+    return;
+
+  stm32_trace_stream_ << std::fixed << std::setprecision(6)
+    << get_clock()->now().seconds()
+    << ',' << event
+    << ',' << static_cast<unsigned>(mode)
+    << ',' << static_cast<unsigned>(sys_state)
+    << ',' << (initial_positions_received_ ? 1 : 0)
+    << ',' << (stm32_homing_trigger_active_.load() ? 1 : 0);
+
+  for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+  {
+    const double value = i < hw_commands_.size() && std::isfinite(hw_commands_[i]) ? hw_commands_[i] : 0.0;
+    stm32_trace_stream_ << ',' << value;
+  }
+  for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+  {
+    const double value = i < hw_states_.size() && std::isfinite(hw_states_[i]) ? hw_states_[i] : 0.0;
+    stm32_trace_stream_ << ',' << value;
+  }
+  for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+  {
+    const double command = i < hw_commands_.size() && std::isfinite(hw_commands_[i]) ? hw_commands_[i] : 0.0;
+    const double state = i < hw_states_.size() && std::isfinite(hw_states_[i]) ? hw_states_[i] : 0.0;
+    stm32_trace_stream_ << ',' << (command - state);
+  }
+  for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+  {
+    const double value = i < hw_velocities_.size() && std::isfinite(hw_velocities_[i]) ? hw_velocities_[i] : 0.0;
+    stm32_trace_stream_ << ',' << value;
+  }
+  for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+  {
+    const double value = i < hw_efforts_.size() && std::isfinite(hw_efforts_[i]) ? hw_efforts_[i] : 0.0;
+    stm32_trace_stream_ << ',' << value;
+  }
+  for (double value : tau_ros_nm)
+    stm32_trace_stream_ << ',' << value;
+  for (double value : tau_hw_nm)
+    stm32_trace_stream_ << ',' << value;
+
+  std::array<double, 6> kp{};
+  std::array<double, 6> kd{};
+  {
+    std::lock_guard<std::mutex> gain_lock(stm32_gain_mtx_);
+    kp = stm32_kp_;
+    kd = stm32_kd_;
+  }
+
+  for (double value : kp)
+    stm32_trace_stream_ << ',' << value;
+  for (double value : kd)
+    stm32_trace_stream_ << ',' << value;
+  stm32_trace_stream_ << '\n';
+  stm32_trace_stream_.flush();
 }
 
 std::vector<uint8_t> MyArmHardware::build_position_command_frame()
@@ -1454,6 +1711,14 @@ std::vector<uint8_t> MyArmHardware::build_stm32_command_frame(
   packet.header = kStm32PacketHeader;
   packet.tail = kStm32PacketTail;
 
+  std::array<double, 6> kp{};
+  std::array<double, 6> kd{};
+  {
+    std::lock_guard<std::mutex> lock(stm32_gain_mtx_);
+    kp = stm32_kp_;
+    kd = stm32_kd_;
+  }
+
   for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
   {
     packet.modes[i] = mode;
@@ -1468,8 +1733,8 @@ std::vector<uint8_t> MyArmHardware::build_stm32_command_frame(
     packet.motors[i].p_des = static_cast<float>(command);
     packet.motors[i].v_des = static_cast<float>(
       mode == kStm32ModeFullMit ? velocity : 0.0);
-    packet.motors[i].kp = static_cast<float>(i < stm32_kp_.size() ? stm32_kp_[i] : 50.0);
-    packet.motors[i].kd = static_cast<float>(i < stm32_kd_.size() ? stm32_kd_[i] : 2.0);
+    packet.motors[i].kp = static_cast<float>(i < kp.size() ? kp[i] : 50.0);
+    packet.motors[i].kd = static_cast<float>(i < kd.size() ? kd[i] : 2.0);
     packet.motors[i].tor_ff = static_cast<float>(
       (mode == kStm32ModePositionTorque || mode == kStm32ModeFullMit) &&
       std::isfinite(tau_hw_nm[i]) ? tau_hw_nm[i] : 0.0);
@@ -1525,10 +1790,18 @@ bool MyArmHardware::pump_stm32_boot_phase(
   const auto start = std::chrono::steady_clock::now();
   const auto duration = std::chrono::duration<double>(duration_sec);
   size_t sent = 0;
+  const uint8_t trace_mode = frame.size() >= 3 ? frame[2] : std::numeric_limits<uint8_t>::max();
   while (std::chrono::steady_clock::now() - start < duration)
   {
     if (!send_stm32_frame(frame))
       return false;
+    last_stm32_write_mode_ = trace_mode;
+    trace_stm32_sample(
+      phase_name,
+      trace_mode,
+      last_stm32_sys_state_,
+      std::array<double, 6>{},
+      std::array<double, 6>{});
 
     std::vector<uint8_t> sys_states;
     try
@@ -1577,6 +1850,13 @@ bool MyArmHardware::wait_for_stm32_feedback_and_sync(double timeout_sec)
   {
     if (!send_stm32_frame(safe_frame))
       return false;
+    last_stm32_write_mode_ = kStm32ModeSafeLock;
+    trace_stm32_sample(
+      "safe_lock_wait_sync",
+      kStm32ModeSafeLock,
+      last_stm32_sys_state_,
+      std::array<double, 6>{},
+      std::array<double, 6>{});
 
     bool got_packet = false;
     Stm32TxPacket packet{};
@@ -1640,6 +1920,17 @@ void MyArmHardware::setup_homing_interface()
     kHomingStateTopic, latched_qos);
   stm32_sys_state_pub_ = homing_node_->create_publisher<std_msgs::msg::UInt8>(
     kStm32SysStateTopic, latched_qos);
+  stm32_control_mode_pub_ = homing_node_->create_publisher<std_msgs::msg::UInt8>(
+    kStm32ControlModeTopic, latched_qos);
+  stm32_mit_gains_pub_ = homing_node_->create_publisher<std_msgs::msg::Float64MultiArray>(
+    kStm32MitGainsCurrentTopic, latched_qos);
+  stm32_mit_gains_sub_ = homing_node_->create_subscription<std_msgs::msg::Float64MultiArray>(
+    kStm32MitGainsCommandTopic,
+    rclcpp::QoS(10),
+    [this](const std_msgs::msg::Float64MultiArray::SharedPtr msg)
+    {
+      apply_stm32_mit_gains_command(msg);
+    });
   dynamics_tau_pub_ = homing_node_->create_publisher<std_msgs::msg::Float64MultiArray>(
     "/my_arm_system/dynamics_tau_ff_nm", rclcpp::QoS(10));
   dynamics_tau_sub_ = homing_node_->create_subscription<std_msgs::msg::Float64MultiArray>(
@@ -1709,6 +2000,8 @@ void MyArmHardware::setup_homing_interface()
   homing_executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
   homing_executor_->add_node(homing_node_);
   homing_spin_thread_ = std::thread([executor = homing_executor_]() { executor->spin(); });
+  publish_stm32_control_mode();
+  publish_stm32_mit_gains();
 }
 
 void MyArmHardware::teardown_homing_interface()
@@ -1726,8 +2019,11 @@ void MyArmHardware::teardown_homing_interface()
   homing_status_pub_.reset();
   homing_state_pub_.reset();
   stm32_sys_state_pub_.reset();
+  stm32_control_mode_pub_.reset();
+  stm32_mit_gains_pub_.reset();
   dynamics_tau_pub_.reset();
   dynamics_tau_sub_.reset();
+  stm32_mit_gains_sub_.reset();
   homing_executor_.reset();
   homing_node_.reset();
 }
@@ -1796,6 +2092,88 @@ void MyArmHardware::publish_stm32_sys_state(uint8_t sys_state)
     state_msg.data = sys_state;
     stm32_sys_state_pub_->publish(state_msg);
   }
+}
+
+void MyArmHardware::publish_stm32_control_mode()
+{
+  if (!stm32_control_mode_pub_)
+    return;
+  std_msgs::msg::UInt8 msg;
+  msg.data = static_cast<uint8_t>(
+    stm32_control_mode_ == Stm32ControlMode::FULL_MIT ? kStm32ModeFullMit :
+    (stm32_control_mode_ == Stm32ControlMode::POSITION_TORQUE ? kStm32ModePositionTorque :
+     kStm32ModePositionOnly));
+  stm32_control_mode_pub_->publish(msg);
+}
+
+void MyArmHardware::publish_stm32_mit_gains()
+{
+  if (!stm32_mit_gains_pub_)
+    return;
+
+  std::array<double, 6> kp{};
+  std::array<double, 6> kd{};
+  {
+    std::lock_guard<std::mutex> lock(stm32_gain_mtx_);
+    kp = stm32_kp_;
+    kd = stm32_kd_;
+  }
+
+  std_msgs::msg::Float64MultiArray msg;
+  msg.data.reserve(12);
+  msg.data.insert(msg.data.end(), kp.begin(), kp.end());
+  msg.data.insert(msg.data.end(), kd.begin(), kd.end());
+  stm32_mit_gains_pub_->publish(msg);
+}
+
+void MyArmHardware::apply_stm32_mit_gains_command(
+  const std_msgs::msg::Float64MultiArray::SharedPtr msg)
+{
+  if (stm32_control_mode_ != Stm32ControlMode::FULL_MIT)
+  {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *clock_, 2000,
+      "Ignoring live STM32 MIT gain command because stm32_control_mode is not full_mit.");
+    publish_stm32_control_mode();
+    publish_stm32_mit_gains();
+    return;
+  }
+
+  if (!msg || msg->data.size() < 12)
+  {
+    RCLCPP_WARN(
+      get_logger(),
+      "Ignoring live STM32 MIT gain command: expected 12 values (kp1..kp6,kd1..kd6), got %zu.",
+      msg ? msg->data.size() : 0);
+    publish_stm32_mit_gains();
+    return;
+  }
+
+  std::array<double, 6> kp{};
+  std::array<double, 6> kd{};
+  {
+    std::lock_guard<std::mutex> lock(stm32_gain_mtx_);
+    kp = stm32_kp_;
+    kd = stm32_kd_;
+    for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+    {
+      if (std::isfinite(msg->data[i]))
+        kp[i] = std::clamp(msg->data[i], 0.0, kStm32MaxLiveKp);
+      if (std::isfinite(msg->data[i + kArmFeedbackJointCount]))
+        kd[i] = std::clamp(msg->data[i + kArmFeedbackJointCount], 0.0, kStm32MaxLiveKd);
+    }
+    stm32_kp_ = kp;
+    stm32_kd_ = kd;
+  }
+
+  RCLCPP_WARN(
+    get_logger(),
+    "Live FULL MIT gains updated: kp=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], "
+    "kd=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
+    kp[0], kp[1], kp[2], kp[3], kp[4], kp[5],
+    kd[0], kd[1], kd[2], kd[3], kd[4], kd[5]);
+  publish_stm32_control_mode();
+  publish_stm32_mit_gains();
 }
 
 bool MyArmHardware::send_system_command(uint8_t command_code, std::string & failure_reason)

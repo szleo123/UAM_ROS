@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -134,6 +135,7 @@ private:
   Stm32ControlMode stm32_control_mode_{Stm32ControlMode::POSITION_ONLY};
   std::array<double, 6> stm32_kp_{{50.0, 50.0, 50.0, 50.0, 50.0, 50.0}};
   std::array<double, 6> stm32_kd_{{2.0, 2.0, 2.0, 2.0, 2.0, 2.0}};
+  std::mutex stm32_gain_mtx_;
   double stm32_heartbeat_duration_sec_{1.0};
   double stm32_trigger_duration_sec_{3.0};
   double stm32_feedback_wait_timeout_sec_{2.0};
@@ -146,7 +148,7 @@ private:
   std::string dynamics_urdf_path_;
   std::string dynamics_feedforward_source_{"topic"};
   std::string dynamics_feedforward_topic_{"/arm_dynamics/torques_nm"};
-  double dynamics_torque_scale_{1.0};
+  std::array<double, 6> dynamics_torque_scales_{{1.0, 1.0, 1.0, 1.0, 1.0, 1.0}};
   double dynamics_torque_low_pass_alpha_{0.2};
   bool dynamics_model_ready_{false};
   bool dynamics_warned_unavailable_{false};
@@ -242,6 +244,14 @@ private:
   void initialize_dynamics_model();
   std::array<double, 6> compute_dynamics_torques(const rclcpp::Duration & period);
   void publish_dynamics_torques(const std::array<double, 6> & tau_ros_nm);
+  void open_stm32_trace();
+  void close_stm32_trace();
+  void trace_stm32_sample(
+    const std::string & event,
+    uint8_t mode,
+    uint8_t sys_state,
+    const std::array<double, 6> & tau_ros_nm,
+    const std::array<double, 6> & tau_hw_nm);
   std::vector<uint8_t> build_position_command_frame();
   std::vector<uint8_t> build_position_torque_command_frame(const std::array<double, 6> & tau_hw_nm);
   std::vector<uint8_t> build_stm32_command_frame(
@@ -259,6 +269,9 @@ private:
   void teardown_homing_interface();
   void publish_homing_state(RosMasterHomingState state, const std::string & message);
   void publish_stm32_sys_state(uint8_t sys_state);
+  void publish_stm32_control_mode();
+  void publish_stm32_mit_gains();
+  void apply_stm32_mit_gains_command(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
   void handle_system_event(uint8_t event_code);
   bool send_system_command(uint8_t command_code, std::string & failure_reason);
   bool start_damiao_initialization(const std::string & source, std::string & message);
@@ -274,8 +287,11 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr homing_status_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr homing_state_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr stm32_sys_state_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr stm32_control_mode_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr stm32_mit_gains_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr dynamics_tau_pub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr dynamics_tau_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr stm32_mit_gains_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr homing_init_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr homing_drop_pose_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr homing_init_srv_;
@@ -283,6 +299,18 @@ private:
   std::mutex homing_state_mtx_;
   RosMasterHomingState homing_state_{RosMasterHomingState::WAITING_INIT_COMMAND};
   uint8_t last_stm32_sys_state_{std::numeric_limits<uint8_t>::max()};
+  uint8_t last_stm32_write_mode_{std::numeric_limits<uint8_t>::max()};
+  std::array<double, 6> last_tau_ros_nm_{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+  std::array<double, 6> last_tau_hw_nm_{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+  bool stm32_trace_enabled_{false};
+  std::string stm32_trace_directory_{"/tmp/arm_stm32_traces"};
+  std::string stm32_trace_run_label_;
+  std::string stm32_trace_file_;
+  bool stm32_trace_append_{false};
+  size_t stm32_trace_decimation_{1};
+  size_t stm32_trace_counter_{0};
+  std::ofstream stm32_trace_stream_;
+  std::mutex stm32_trace_mtx_;
   std::atomic_bool stm32_homing_trigger_active_{false};
   bool sync_commands_on_next_feedback_{false};
   std::mutex command_hold_mtx_;

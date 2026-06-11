@@ -19,14 +19,14 @@ void cubemars_motor_init(void)
     cm_motor[0].ctrl.acc_set = 0.0f; // no affect when in mit mode
 	
 	  //for real
-//		cm_motor[0].ctrl.kp_set = 320;
-//		cm_motor[0].ctrl.kd_set = 1;
-//		cm_motor[0].ctrl.tor_set = 3.8;
+		cm_motor[0].ctrl.kp_set = 320;
+		cm_motor[0].ctrl.kd_set = 1;
+		cm_motor[0].ctrl.tor_set = 0;
     
 		// FOR TEST
-		cm_motor[0].ctrl.kp_set = 50;
-		cm_motor[0].ctrl.kd_set = 0.6;
-		cm_motor[0].ctrl.tor_set = 0;
+//		cm_motor[0].ctrl.kp_set = 50;
+//		cm_motor[0].ctrl.kd_set = 0.6;
+//		cm_motor[0].ctrl.tor_set = 0;
 	
     // 【关键修改】使用新变量名初始化
     cm_motor[0].mit_para.p_limit = 12.56f;

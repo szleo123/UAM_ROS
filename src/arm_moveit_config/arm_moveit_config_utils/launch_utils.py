@@ -37,6 +37,12 @@ STM32_ARGUMENT_NAMES = [
     "stm32_trigger_duration_sec",
     "stm32_feedback_wait_timeout_sec",
     "enable_stm32_zero_trigger",
+    "stm32_trace_enabled",
+    "stm32_trace_directory",
+    "stm32_trace_run_label",
+    "stm32_trace_file",
+    "stm32_trace_append",
+    "stm32_trace_decimation",
 ]
 
 GRIPPER_ARGUMENT_NAMES = [
@@ -88,6 +94,10 @@ UI_ARGUMENT_NAMES = [
     "start_move_group",
     "start_controllers",
     "start_homing_button",
+    "start_mit_gain_tuner",
+    "mit_gain_tuner_kp_max",
+    "mit_gain_tuner_kd_max",
+    "mit_gain_tuner_live_update",
 ]
 
 HANDEYE_ARGUMENT_NAMES = [
@@ -192,7 +202,7 @@ def common_bringup_launch_arguments(
     stm32_args = [
         DeclareLaunchArgument(
             "stm32_control_mode",
-            default_value="0",
+            default_value="2",
             description=(
                 "STM32 motor command mode: 0/position_only, 1/position_torque, "
                 "or 2/full_mit."
@@ -200,7 +210,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "stm32_kp",
-            default_value="360,480,320,100,60,10",
+            default_value="460,480,320,100,60,10",
             description=(
                 "Comma-separated per-joint Kp sent to STM32 in full MIT mode. "
                 "Ignored by STM32 position-only mode."
@@ -208,7 +218,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "stm32_kd",
-            default_value="2.0,2.0,1.0,0.5,0.3,1.0",
+            default_value="2.0,2.0,1.0,0.7,0.3,1.0",
             description=(
                 "Comma-separated per-joint Kd sent to STM32 in full MIT mode. "
                 "Ignored by STM32 position-only mode."
@@ -239,6 +249,39 @@ def common_bringup_launch_arguments(
                 "Enable the operator Confirm Drop Pose packet that triggers STM32 joint-3 zeroing. "
                 "Keep false on hardware until the MCU zeroing sequence is bench-validated."
             ),
+        ),
+        DeclareLaunchArgument(
+            "stm32_trace_enabled",
+            default_value="true",
+            description="Write a per-run STM32 command/feedback/torque CSV trace from the hardware interface.",
+        ),
+        DeclareLaunchArgument(
+            "stm32_trace_file",
+            default_value="",
+            description=(
+                "Optional exact STM32 trace CSV path. Empty creates a timestamped file "
+                "inside stm32_trace_directory."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "stm32_trace_directory",
+            default_value="/home/li/UAM_ROS/run_logs",
+            description="Folder for timestamped STM32 trace CSV files.",
+        ),
+        DeclareLaunchArgument(
+            "stm32_trace_run_label",
+            default_value="",
+            description="Optional label appended to timestamped STM32 trace filenames.",
+        ),
+        DeclareLaunchArgument(
+            "stm32_trace_append",
+            default_value="false",
+            description="Append to the STM32 trace CSV instead of overwriting it.",
+        ),
+        DeclareLaunchArgument(
+            "stm32_trace_decimation",
+            default_value="1",
+            description="Write one STM32 trace row every N trace samples.",
         ),
     ]
 
@@ -313,12 +356,15 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "dynamics_torque_scale",
-            default_value="1.0",
-            description="Global multiplier applied before torque clamping.",
+            default_value="1.0,1.0,1.0,1.0,1.0,1.0",
+            description=(
+                "Torque multiplier applied before clamping. Use one value for all joints "
+                "or six comma-separated values for joint_1..joint_6."
+            ),
         ),
         DeclareLaunchArgument(
             "dynamics_torque_limits_nm",
-            default_value="10.0,10.0,10.0,10.0,10.0,10.0",
+            default_value="10.0,20.0,10.0,10.0,10.0,10.0",
             description="Comma-separated per-joint absolute torque feedforward limits in Nm.",
         ),
         DeclareLaunchArgument(
@@ -328,7 +374,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "dynamics_torque_low_pass_alpha",
-            default_value="0.4",
+            default_value="0.8",
             description="Low-pass alpha for computed torque feedforward, 0..1.",
         ),
         DeclareLaunchArgument(
@@ -447,6 +493,26 @@ def common_bringup_launch_arguments(
             default_value=default_start_homing_button,
             description="Launch the manual homing confirmation button window.",
         ),
+        DeclareLaunchArgument(
+            "start_mit_gain_tuner",
+            default_value="true",
+            description="Launch the STM32 FULL MIT Kp/Kd tuning window.",
+        ),
+        DeclareLaunchArgument(
+            "mit_gain_tuner_kp_max",
+            default_value="1000.0",
+            description="Maximum Kp slider value in the FULL MIT gain tuner.",
+        ),
+        DeclareLaunchArgument(
+            "mit_gain_tuner_kd_max",
+            default_value="100.0",
+            description="Maximum Kd slider value in the FULL MIT gain tuner.",
+        ),
+        DeclareLaunchArgument(
+            "mit_gain_tuner_live_update",
+            default_value="false",
+            description="Publish Kp/Kd changes while sliders move in the FULL MIT gain tuner.",
+        ),
     ]
 
     handeye_args = [
@@ -511,6 +577,12 @@ def robot_description_mappings():
         "stm32_trigger_duration_sec": LaunchConfiguration("stm32_trigger_duration_sec"),
         "stm32_feedback_wait_timeout_sec": LaunchConfiguration("stm32_feedback_wait_timeout_sec"),
         "enable_stm32_zero_trigger": LaunchConfiguration("enable_stm32_zero_trigger"),
+        "stm32_trace_enabled": LaunchConfiguration("stm32_trace_enabled"),
+        "stm32_trace_directory": LaunchConfiguration("stm32_trace_directory"),
+        "stm32_trace_run_label": LaunchConfiguration("stm32_trace_run_label"),
+        "stm32_trace_file": LaunchConfiguration("stm32_trace_file"),
+        "stm32_trace_append": LaunchConfiguration("stm32_trace_append"),
+        "stm32_trace_decimation": LaunchConfiguration("stm32_trace_decimation"),
         "enable_dynamics_feedforward": LaunchConfiguration("enable_dynamics_feedforward"),
         "dynamics_mode": LaunchConfiguration("dynamics_mode"),
         "dynamics_urdf_path": LaunchConfiguration("dynamics_urdf_path"),

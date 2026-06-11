@@ -23,6 +23,12 @@
     <xacro:arg name="stm32_trigger_duration_sec" default="3.0" />
     <xacro:arg name="stm32_feedback_wait_timeout_sec" default="2.0" />
     <xacro:arg name="enable_stm32_zero_trigger" default="false" />
+    <xacro:arg name="stm32_trace_enabled" default="false" />
+    <xacro:arg name="stm32_trace_directory" default="/tmp/arm_stm32_traces" />
+    <xacro:arg name="stm32_trace_run_label" default="" />
+    <xacro:arg name="stm32_trace_file" default="" />
+    <xacro:arg name="stm32_trace_append" default="false" />
+    <xacro:arg name="stm32_trace_decimation" default="1" />
     <xacro:arg name="enable_dynamics_feedforward" default="false" />
     <xacro:arg name="dynamics_mode" default="gravity" />
     <xacro:arg name="dynamics_urdf_path" default="" />
@@ -96,6 +102,12 @@
       stm32_trigger_duration_sec="$(arg stm32_trigger_duration_sec)"
       stm32_feedback_wait_timeout_sec="$(arg stm32_feedback_wait_timeout_sec)"
       enable_stm32_zero_trigger="$(arg enable_stm32_zero_trigger)"
+      stm32_trace_enabled="$(arg stm32_trace_enabled)"
+      stm32_trace_directory="$(arg stm32_trace_directory)"
+      stm32_trace_run_label="$(arg stm32_trace_run_label)"
+      stm32_trace_file="$(arg stm32_trace_file)"
+      stm32_trace_append="$(arg stm32_trace_append)"
+      stm32_trace_decimation="$(arg stm32_trace_decimation)"
       enable_dynamics_feedforward="$(arg enable_dynamics_feedforward)"
       dynamics_mode="$(arg dynamics_mode)"
       dynamics_urdf_path="$(arg dynamics_urdf_path)"

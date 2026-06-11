@@ -1,6 +1,7 @@
 build/
 install/
 log/
+run_logs/
 
 # Third-party ROS packages are fetched with dependencies.repos.
 /src/easy_handeye2/

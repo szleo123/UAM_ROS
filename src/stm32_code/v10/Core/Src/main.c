@@ -251,14 +251,14 @@ int32_t target_position = 0;
 
 // init_flag
 // Initially, all init_flags should be false. If set to true, the initialization success detection routine will skip the motor;
-bool init_flag_1 = true; 
+bool init_flag_1 = false; 
 bool init_flag_2 = false;
 
-bool init_flag_4 = true; 
+bool init_flag_4 = true;
 bool init_flag_5 = true;
 
 // Initially, it should be true
-bool first_moto_cb = true; 
+bool first_moto_cb = true;
 
 /* USER CODE END PV */
 

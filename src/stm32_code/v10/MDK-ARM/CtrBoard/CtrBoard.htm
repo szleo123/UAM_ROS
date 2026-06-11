@@ -3,7 +3,7 @@
 <title>Static Call Graph - [CtrBoard\CtrBoard.axf]</title></head>
 <body><HR>
 <H1>Static Call Graph for image CtrBoard\CtrBoard.axf</H1><HR>
-<BR><P>#&#060CALLGRAPH&#062# ARM Linker, 6220000: Last Updated: Thu May 14 15:33:51 2026
+<BR><P>#&#060CALLGRAPH&#062# ARM Linker, 6220000: Last Updated: Mon Jun  1 09:22:42 2026
 <BR><P>
 <H3>Maximum Stack Usage =        368 bytes + Unknown(Cycles, Untraceable Function Pointers)</H3><H3>
 Call chain for Maximum Stack Depth:</H3>
@@ -1724,7 +1724,7 @@ Global Symbols
 <P><STRONG><a name="[8]"></a>PendSV_Handler</STRONG> (Thumb, 2 bytes, Stack size 0 bytes, stm32h7xx_it.o(.text.PendSV_Handler))
 <BR>[Address Reference Count : 1]<UL><LI> startup_stm32h723xx.o(RESET)
 </UL>
-<P><STRONG><a name="[13e]"></a>Protocol_Execute_Router</STRONG> (Thumb, 924 bytes, Stack size 24 bytes, ros_protocol.o(.text.Protocol_Execute_Router))
+<P><STRONG><a name="[13e]"></a>Protocol_Execute_Router</STRONG> (Thumb, 868 bytes, Stack size 24 bytes, ros_protocol.o(.text.Protocol_Execute_Router))
 <BR><BR>[Stack]<UL><LI>Max Depth = 32<LI>Call Chain = Protocol_Execute_Router &rArr; __aeabi_memcpy4
 </UL>
 <BR>[Calls]<UL><LI><a href="#[bf]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_GetTick
@@ -1744,7 +1744,7 @@ Global Symbols
 <BR>[Called By]<UL><LI><a href="#[ab]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;CDC_Receive_HS
 </UL>
 
-<P><STRONG><a name="[143]"></a>Protocol_Send_Feedback</STRONG> (Thumb, 460 bytes, Stack size 16 bytes, ros_protocol.o(.text.Protocol_Send_Feedback))
+<P><STRONG><a name="[143]"></a>Protocol_Send_Feedback</STRONG> (Thumb, 512 bytes, Stack size 16 bytes, ros_protocol.o(.text.Protocol_Send_Feedback))
 <BR><BR>[Stack]<UL><LI>Max Depth = 68<LI>Call Chain = Protocol_Send_Feedback &rArr; CDC_Transmit_HS &rArr; USBD_CDC_TransmitPacket &rArr; USBD_LL_Transmit &rArr; HAL_PCD_EP_Transmit &rArr; USB_EPStartXfer
 </UL>
 <BR>[Calls]<UL><LI><a href="#[ba]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;CDC_Transmit_HS
@@ -2448,7 +2448,7 @@ Global Symbols
 <BR>[Called By]<UL><LI><a href="#[93]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;main
 </UL>
 
-<P><STRONG><a name="[197]"></a>cubemars_motor_init</STRONG> (Thumb, 94 bytes, Stack size 8 bytes, cubemars_motor_ctrl.o(.text.cubemars_motor_init))
+<P><STRONG><a name="[197]"></a>cubemars_motor_init</STRONG> (Thumb, 90 bytes, Stack size 8 bytes, cubemars_motor_ctrl.o(.text.cubemars_motor_init))
 <BR><BR>[Stack]<UL><LI>Max Depth = 8<LI>Call Chain = cubemars_motor_init
 </UL>
 <BR>[Calls]<UL><LI><a href="#[169]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;__aeabi_memclr4
@@ -2485,8 +2485,8 @@ Global Symbols
 <LI><a href="#[e2]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;fdcan1_rx_callback
 </UL>
 
-<P><STRONG><a name="[19c]"></a>dm_motor_init</STRONG> (Thumb, 316 bytes, Stack size 24 bytes, dm_motor_ctrl.o(.text.dm_motor_init))
-<BR><BR>[Stack]<UL><LI>Max Depth = 24<LI>Call Chain = dm_motor_init
+<P><STRONG><a name="[19c]"></a>dm_motor_init</STRONG> (Thumb, 306 bytes, Stack size 16 bytes, dm_motor_ctrl.o(.text.dm_motor_init))
+<BR><BR>[Stack]<UL><LI>Max Depth = 16<LI>Call Chain = dm_motor_init
 </UL>
 <BR>[Calls]<UL><LI><a href="#[169]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;__aeabi_memclr4
 </UL>

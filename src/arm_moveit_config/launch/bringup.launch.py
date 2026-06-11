@@ -144,6 +144,31 @@ def generate_launch_description():
         ),
     )
 
+    mit_gain_tuner = Node(
+        package="my_arm_hardware",
+        executable="mit_gain_tuner.py",
+        name="stm32_mit_gain_tuner",
+        output="screen",
+        parameters=[
+            {
+                "kp_max": LaunchConfiguration("mit_gain_tuner_kp_max"),
+                "kd_max": LaunchConfiguration("mit_gain_tuner_kd_max"),
+                "live_update": LaunchConfiguration("mit_gain_tuner_live_update"),
+            }
+        ],
+        condition=IfCondition(
+            PythonExpression(
+                [
+                    "'",
+                    LaunchConfiguration("start_mit_gain_tuner"),
+                    "'.lower() == 'true' and '",
+                    LaunchConfiguration("use_fake_hardware"),
+                    "'.lower() != 'true'",
+                ]
+            )
+        ),
+    )
+
     dynamics_monitor = Node(
         package="my_arm_hardware",
         executable="dynamics_monitor.py",
@@ -201,6 +226,7 @@ def generate_launch_description():
             rviz_node,
             handeye_publisher,
             homing_button,
+            mit_gain_tuner,
             dynamics_monitor,
             joint_feedback_monitor,
         ]

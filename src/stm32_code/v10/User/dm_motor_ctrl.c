@@ -34,7 +34,7 @@ void dm_motor_init(void)
 	motor[Motor1].ctrl.mode 	= mit_mode;
 	motor[Motor1].ctrl.vel_set 	= 0.0f;
 	motor[Motor1].ctrl.pos_set 	= 0.0f;
-	motor[Motor1].ctrl.tor_set 	= 5.0f;
+	motor[Motor1].ctrl.tor_set 	= 0.0f;
 	motor[Motor1].ctrl.cur_set 	= 0.02f;
 	motor[Motor1].ctrl.kp_set 	= 360.0f;
 	motor[Motor1].ctrl.kd_set 	= 2.0f;
@@ -58,33 +58,33 @@ void dm_motor_init(void)
 //	motor[Motor1].tmp.TMAX		= 5.0f;
     
     // 设置Motor2的电机信息,DM10010
-//	motor[Motor2].id = 0x02;
-//	motor[Motor2].mst_id = 0x12;
-//	motor[Motor2].tmp.read_flag = 1;
-//	motor[Motor2].ctrl.mode 	= mit_mode;
-//	motor[Motor2].ctrl.vel_set 	= 0.0f;
-//	motor[Motor2].ctrl.pos_set 	= 1.6f; 
-//	motor[Motor2].ctrl.tor_set 	= 20.0f;
-//	motor[Motor2].ctrl.cur_set 	= 0.02f;
-//	motor[Motor2].ctrl.kp_set 	= 480.0f;
-//	motor[Motor2].ctrl.kd_set 	= 2.0f;
-//	motor[Motor2].tmp.PMAX		= 12.5f;
-//	motor[Motor2].tmp.VMAX		= 20.0f;
-//	motor[Motor2].tmp.TMAX		= 200.0f;
-  // 测试Motor2的电机信息，DM4310
 	motor[Motor2].id = 0x02;
-	motor[Motor2].mst_id = 0x12;	
+	motor[Motor2].mst_id = 0x12;
 	motor[Motor2].tmp.read_flag = 1;
 	motor[Motor2].ctrl.mode 	= mit_mode;
 	motor[Motor2].ctrl.vel_set 	= 0.0f;
-	motor[Motor2].ctrl.pos_set 	= 0.0f; 
-	motor[Motor2].ctrl.tor_set 	= 0.8f;
+	motor[Motor2].ctrl.pos_set 	= 1.6f; 
+	motor[Motor2].ctrl.tor_set 	= 0.0f;
 	motor[Motor2].ctrl.cur_set 	= 0.02f;
-	motor[Motor2].ctrl.kp_set 	= 40.0f;
-	motor[Motor2].ctrl.kd_set 	= 0.3f;
+	motor[Motor2].ctrl.kp_set 	= 480.0f;
+	motor[Motor2].ctrl.kd_set 	= 2.0f;
 	motor[Motor2].tmp.PMAX		= 12.5f;
-	motor[Motor2].tmp.VMAX		= 50.0f;
-	motor[Motor2].tmp.TMAX		= 5.0f;
+	motor[Motor2].tmp.VMAX		= 20.0f;
+	motor[Motor2].tmp.TMAX		= 200.0f;
+  // 测试Motor2的电机信息，DM4310
+//	motor[Motor2].id = 0x02;
+//	motor[Motor2].mst_id = 0x12;	
+//	motor[Motor2].tmp.read_flag = 1;
+//	motor[Motor2].ctrl.mode 	= mit_mode;
+//	motor[Motor2].ctrl.vel_set 	= 0.0f;
+//	motor[Motor2].ctrl.pos_set 	= 0.0f; 
+//	motor[Motor2].ctrl.tor_set 	= 0.8f;
+//	motor[Motor2].ctrl.cur_set 	= 0.02f;
+//	motor[Motor2].ctrl.kp_set 	= 40.0f;
+//	motor[Motor2].ctrl.kd_set 	= 0.3f;
+//	motor[Motor2].tmp.PMAX		= 12.5f;
+//	motor[Motor2].tmp.VMAX		= 50.0f;
+//	motor[Motor2].tmp.TMAX		= 5.0f;
     // 设置Motor3的电机信息，DM4340
 //	motor[Motor3].id = 0x03;
 //	motor[Motor3].mst_id = 0x13;	// 实际没有用上，只做标识作用
@@ -107,7 +107,7 @@ void dm_motor_init(void)
 	motor[Motor4].ctrl.mode 	= mit_mode;
 	motor[Motor4].ctrl.vel_set 	= 0.0f;
 	motor[Motor4].ctrl.pos_set 	= 0.0f;
-	motor[Motor4].ctrl.tor_set 	= 1.0f;
+	motor[Motor4].ctrl.tor_set 	= 0.0f;
 	motor[Motor4].ctrl.cur_set 	= 0.02f;
 	motor[Motor4].ctrl.kp_set 	= 100.0f;
 	motor[Motor4].ctrl.kd_set 	= 0.5f;
@@ -122,7 +122,7 @@ void dm_motor_init(void)
 	motor[Motor5].ctrl.mode 	= mit_mode;
 	motor[Motor5].ctrl.vel_set 	= 0.0f;
 	motor[Motor5].ctrl.pos_set 	= 1.57f;
-	motor[Motor5].ctrl.tor_set 	= 0.8f;
+	motor[Motor5].ctrl.tor_set 	= 0.0f;
 	motor[Motor5].ctrl.cur_set 	= 0.02f;
 	motor[Motor5].ctrl.kp_set 	= 60.0f;
 	motor[Motor5].ctrl.kd_set 	= 0.3f;

@@ -33,7 +33,7 @@ class DynamicsMonitor(Node):
         self.declare_parameter("per_joint_topic_prefix", "/arm_dynamics")
         self.declare_parameter("rate_hz", 50.0)
         self.declare_parameter("mode", "gravity")
-        self.declare_parameter("torque_scale", 1.0)
+        self.declare_parameter("torque_scale", "1.0")
         self.declare_parameter("torque_limits_nm", "0.5,0.5,0.3,0.2,0.15,0.1")
         self.declare_parameter("low_pass_alpha", 0.2)
         self.declare_parameter("state_timeout_sec", 0.5)
@@ -43,7 +43,15 @@ class DynamicsMonitor(Node):
 
         self.joint_names = _parse_csv(self.get_parameter("joint_names").value, str)
         self.mode = str(self.get_parameter("mode").value).lower()
-        self.torque_scale = float(self.get_parameter("torque_scale").value)
+        self.torque_scale = np.array(
+            _parse_csv(self.get_parameter("torque_scale").value, float), dtype=float
+        )
+        if len(self.torque_scale) == 0:
+            self.torque_scale = np.ones(len(self.joint_names))
+        elif len(self.torque_scale) < len(self.joint_names):
+            pad = np.full(len(self.joint_names) - len(self.torque_scale), self.torque_scale[-1])
+            self.torque_scale = np.concatenate([self.torque_scale, pad])
+        self.torque_scale = self.torque_scale[: len(self.joint_names)]
         self.torque_limits = np.array(
             _parse_csv(self.get_parameter("torque_limits_nm").value, float), dtype=float
         )
@@ -94,7 +102,8 @@ class DynamicsMonitor(Node):
 
         self.get_logger().warn(
             f"Dynamics monitor ready: mode={self.mode}, joints={self.joint_names}, "
-            f"limits={self.torque_limits.tolist()}, plot={self.plot_enabled}"
+            f"scales={self.torque_scale.tolist()}, limits={self.torque_limits.tolist()}, "
+            f"plot={self.plot_enabled}"
         )
 
     def _load_pinocchio_model(self):

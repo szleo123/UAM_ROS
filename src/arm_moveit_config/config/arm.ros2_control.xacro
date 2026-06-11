@@ -23,6 +23,12 @@
     <xacro:arg name="stm32_trigger_duration_sec" default="3.0"/>
     <xacro:arg name="stm32_feedback_wait_timeout_sec" default="2.0"/>
     <xacro:arg name="enable_stm32_zero_trigger" default="false"/>
+    <xacro:arg name="stm32_trace_enabled" default="false"/>
+    <xacro:arg name="stm32_trace_directory" default="/tmp/arm_stm32_traces"/>
+    <xacro:arg name="stm32_trace_run_label" default=""/>
+    <xacro:arg name="stm32_trace_file" default=""/>
+    <xacro:arg name="stm32_trace_append" default="false"/>
+    <xacro:arg name="stm32_trace_decimation" default="1"/>
     <xacro:arg name="enable_dynamics_feedforward" default="false"/>
     <xacro:arg name="dynamics_mode" default="gravity"/>
     <xacro:arg name="dynamics_urdf_path" default=""/>
@@ -73,6 +79,12 @@
         stm32_trigger_duration_sec:='3.0'
         stm32_feedback_wait_timeout_sec:='2.0'
         enable_stm32_zero_trigger:='false'
+        stm32_trace_enabled:='false'
+        stm32_trace_directory:='/tmp/arm_stm32_traces'
+        stm32_trace_run_label:=''
+        stm32_trace_file:=''
+        stm32_trace_append:='false'
+        stm32_trace_decimation:='1'
         enable_dynamics_feedforward:='false'
         dynamics_mode:='gravity'
         dynamics_urdf_path:=''
@@ -114,6 +126,12 @@
                     <param name="stm32_trigger_duration_sec">${stm32_trigger_duration_sec}</param>
                     <param name="stm32_feedback_wait_timeout_sec">${stm32_feedback_wait_timeout_sec}</param>
                     <param name="enable_stm32_zero_trigger">${enable_stm32_zero_trigger}</param>
+                    <param name="stm32_trace_enabled">${stm32_trace_enabled}</param>
+                    <param name="stm32_trace_directory">${stm32_trace_directory}</param>
+                    <param name="stm32_trace_run_label">${stm32_trace_run_label}</param>
+                    <param name="stm32_trace_file">${stm32_trace_file}</param>
+                    <param name="stm32_trace_append">${stm32_trace_append}</param>
+                    <param name="stm32_trace_decimation">${stm32_trace_decimation}</param>
                     <param name="enable_dynamics_feedforward">${enable_dynamics_feedforward}</param>
                     <param name="dynamics_mode">${dynamics_mode}</param>
                     <param name="dynamics_urdf_path">${dynamics_urdf_path}</param>
@@ -132,7 +150,7 @@
             <xacro:position_joint_interfaces joint_name="joint_2" initial_value="${initial_positions['joint_2']}" min_limit="0.0" max_limit="3.14"/>
             <xacro:position_joint_interfaces joint_name="joint_3" initial_value="${initial_positions['joint_3']}" min_limit="-3.14" max_limit="0.0"/>
             <xacro:position_joint_interfaces joint_name="joint_4" initial_value="${initial_positions['joint_4']}" min_limit="-3.14" max_limit="3.14"/>
-            <xacro:position_joint_interfaces joint_name="joint_5" initial_value="${initial_positions['joint_5']}" min_limit="0.0" max_limit="3.14"/>
+            <xacro:position_joint_interfaces joint_name="joint_5" initial_value="${initial_positions['joint_5']}" min_limit="0" max_limit="3.14"/>
             <xacro:position_joint_interfaces joint_name="joint_6" initial_value="${initial_positions['joint_6']}" min_limit="-3.14" max_limit="3.14"/>
             <xacro:position_joint_interfaces joint_name="tool_joint" initial_value="${initial_positions['tool_joint']}" min_limit="${aux_joint_min}" max_limit="${aux_joint_max}"/>
         </ros2_control>

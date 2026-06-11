@@ -3,7 +3,9 @@
 #include "main.h"
 #include "dm_motor_ctrl.h"
 #include "cubemars_motor_ctrl.h"
-#include "usbd_cdc_if.h"  // 加入这一行以调用 CDC_Transmit_HS
+#include "usbd_cdc_if.h"  // CDC_Transmit_HS
+
+extern bool init_flag_3; 
 
 // 1. The "Inbox": USB interrupt writes directly to this byte array
 RosRxUnion_t USB_Rx_Buffer;
@@ -113,10 +115,10 @@ void Protocol_Parse_Stream(uint8_t *data, uint32_t len)
 #define FOREARM_OFFSET_RAD (0.0f) // Adjust if needed
 
 // Define Safe Fallback Parameters (Impedance for holding position)
-#define DM_SAFE_KP  50.0f
-#define DM_SAFE_KD  0.6f
-#define CM_SAFE_KP  50.0f
-#define CM_SAFE_KD  0.6f
+#define DM_SAFE_KP  25.0f
+#define DM_SAFE_KD  1.0f
+#define CM_SAFE_KP  25.0f
+#define CM_SAFE_KD  1.0f
 
 // External reference to DJI target position (from main.c)
 extern int32_t target_position;
@@ -155,7 +157,7 @@ void Protocol_Execute_Router(void)
         if (is_timeout) {
             // [Core Fix] Capture the physical position ONLY at the exact moment of disconnection!
             if (!was_timeout) {
-                m->ctrl.pos_set = m->para.pos; 
+                m->ctrl.pos_set = m->para.pos;
             }
             
             // Continuously inject safe damping/stiffness, NEVER modify the position!
@@ -167,14 +169,10 @@ void Protocol_Execute_Router(void)
         } else if (mode == MODE_POS_ONLY) {
             m->ctrl.pos_set = cmd->p_des;
             m->ctrl.vel_set = 0.0f;
-            m->ctrl.kp_set  = DM_SAFE_KP;
-            m->ctrl.kd_set  = DM_SAFE_KD;
             m->ctrl.tor_set = 0.0f;
         } else if (mode == MODE_POS_TORQUE) {
             m->ctrl.pos_set = cmd->p_des;
             m->ctrl.vel_set = 0.0f;
-            m->ctrl.kp_set  = DM_SAFE_KP;
-            m->ctrl.kd_set  = DM_SAFE_KD;
             m->ctrl.tor_set = cmd->tor_ff; 
         } else if (mode == MODE_FULL_MIT) {
             m->ctrl.pos_set = cmd->p_des;
@@ -185,9 +183,6 @@ void Protocol_Execute_Router(void)
         } else {
             m->ctrl.pos_set = m->para.pos;
             m->ctrl.vel_set = 0.0f;
-            m->ctrl.kp_set  = DM_SAFE_KP;
-            m->ctrl.kd_set  = DM_SAFE_KD;
-            m->ctrl.tor_set = 0.0f;
         }
     }
 
@@ -201,8 +196,6 @@ void Protocol_Execute_Router(void)
             cm_motor[0].ctrl.pos_set = cm_motor[0].fb.pos * (3.1415926f / 180.0f); 
         }
         cm_motor[0].ctrl.vel_set = 0.0f;
-        cm_motor[0].ctrl.kp_set  = CM_SAFE_KP;
-        cm_motor[0].ctrl.kd_set  = CM_SAFE_KD;
         cm_motor[0].ctrl.tor_set = 0.0f;
     } else {
         // Apply Kinematic Offset
@@ -211,14 +204,10 @@ void Protocol_Execute_Router(void)
         if (cm_mode == MODE_POS_ONLY) {
             cm_motor[0].ctrl.pos_set = target_rad;
             cm_motor[0].ctrl.vel_set = 0.0f;
-            cm_motor[0].ctrl.kp_set  = CM_SAFE_KP;
-            cm_motor[0].ctrl.kd_set  = CM_SAFE_KD;
             cm_motor[0].ctrl.tor_set = 0.0f;
         } else if (cm_mode == MODE_POS_TORQUE) {
             cm_motor[0].ctrl.pos_set = target_rad;
             cm_motor[0].ctrl.vel_set = 0.0f;
-            cm_motor[0].ctrl.kp_set  = CM_SAFE_KP;
-            cm_motor[0].ctrl.kd_set  = CM_SAFE_KD;
             cm_motor[0].ctrl.tor_set = cm_cmd->tor_ff;
         } else if (cm_mode == MODE_FULL_MIT) {
             cm_motor[0].ctrl.pos_set = target_rad;
@@ -228,19 +217,20 @@ void Protocol_Execute_Router(void)
             cm_motor[0].ctrl.tor_set = cm_cmd->tor_ff;
         } else {
             // [Crucial Fallback]: Unknown mode (e.g., 0xFF or 0x10), lock in place safely!
-            // Must convert physical degrees to target radians with offset to avoid jerking.
-            cm_motor[0].ctrl.pos_set = cm_motor[0].fb.pos * (3.1415926f / 180.0f);
+            // [Crucial Fallback]: Unknown mode (e.g., 0xFF or 0x10), lock in place safely!
+            // Fix for hardware feedback delay causing a jerk bug
+            if (init_flag_3) {
+                // Strictly enforce 0.0f if homing is complete, do not trust stale sensor data
+                cm_motor[0].ctrl.pos_set = 0.0f; 
+            }
             cm_motor[0].ctrl.vel_set = 0.0f;
-            cm_motor[0].ctrl.kp_set  = CM_SAFE_KP;
-            cm_motor[0].ctrl.kd_set  = CM_SAFE_KD;
-            cm_motor[0].ctrl.tor_set = 0.0f;
         }
     }
 
     // 4. Route Data for DJI 2006 (ROS Index: 5)
     if (!is_timeout) {
         float dji_rad = Current_Target_Cmd.motors[5].p_des;
-        target_position = (int32_t)((dji_rad / 3.1415926f) * 8191.0f * 36.0f);
+        target_position = (int32_t)((dji_rad / (3.1415926f)) * 8191.0f * 36.0f);
     }
     
     // [Core Fix] Update the state at the end of the function 
@@ -253,6 +243,7 @@ void Protocol_Execute_Router(void)
  * Gathers real physics states, packs them, and transmits via USB.
  * ===================================================================== */
 RosTxUnion_t USB_Tx_Buffer;
+#define CM_KT 0.130f
 
 void Protocol_Send_Feedback(void)
 {
@@ -273,11 +264,24 @@ void Protocol_Send_Feedback(void)
         USB_Tx_Buffer.pkt.motors[idx].tor = dm_ptrs[i]->para.tor; 
     }
 
-    // 3. Pack CubeMars (ROS Index: 2)
-    // CRITICAL: Add the Forearm Offset back so ROS2 gets URDF-aligned Radian coordinates!
-    USB_Tx_Buffer.pkt.motors[2].pos = cm_motor[0].fb.pos * (3.1415926f / 180.0f) + FOREARM_OFFSET_RAD; 
-    USB_Tx_Buffer.pkt.motors[2].vel = cm_motor[0].fb.vel; // Convert to rad/s if needed
-    USB_Tx_Buffer.pkt.motors[2].tor = cm_motor[0].fb.cur; // CubeMars fb uses current, mapped to tor
+    // 3. CubeMars Feedback (Index 2)
+		// Before homing is complete (init_flag_3 == false), 
+		// "spoof" the feedback as 0.0 to prevent ROS2 controller jumps.
+		if (init_flag_3) {
+				// Normal state: send real position with offset
+				USB_Tx_Buffer.pkt.motors[2].pos = cm_motor[0].fb.pos * (3.1415926f / 180.0f) + FOREARM_OFFSET_RAD;
+		} else {
+				// Homing state: spoof position as 0.0
+				USB_Tx_Buffer.pkt.motors[2].pos = 0.0f;
+		}
+
+		if (!init_flag_3) {
+				USB_Tx_Buffer.pkt.motors[2].vel = 0.0f;
+				USB_Tx_Buffer.pkt.motors[2].tor = 0.0f;
+		} else {
+				USB_Tx_Buffer.pkt.motors[2].vel = cm_motor[0].fb.vel * (3.1415926f / 180.0f);
+				USB_Tx_Buffer.pkt.motors[2].tor = cm_motor[0].fb.cur*CM_KT;
+		}
 
     // 4. Pack DJI 2006 (ROS Index: 5)
     // Convert Ticks to Radians

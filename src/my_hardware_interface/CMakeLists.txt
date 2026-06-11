@@ -97,6 +97,8 @@ install(
     scripts/homing_button.py
     scripts/dynamics_monitor.py
     scripts/joint_feedback_monitor.py
+    scripts/stm32_trace_visualizer.py
+    scripts/mit_gain_tuner.py
   DESTINATION lib/${PROJECT_NAME}
 )
 install(TARGETS my_arm_hardware
