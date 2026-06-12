@@ -19,10 +19,13 @@
     <xacro:arg name="stm32_control_mode" default="0"/>
     <xacro:arg name="stm32_kp" default="50,50,50,50,50,50"/>
     <xacro:arg name="stm32_kd" default="2,2,2,2,2,2"/>
+    <xacro:arg name="stm32_v_des_limits_rad_s" default="1,1,1,1,1,1"/>
     <xacro:arg name="stm32_heartbeat_duration_sec" default="1.0"/>
     <xacro:arg name="stm32_trigger_duration_sec" default="3.0"/>
     <xacro:arg name="stm32_feedback_wait_timeout_sec" default="2.0"/>
     <xacro:arg name="enable_stm32_zero_trigger" default="false"/>
+    <xacro:arg name="stm32_recover_safe_drop_on_start" default="true"/>
+    <xacro:arg name="stm32_recover_duration_sec" default="0.25"/>
     <xacro:arg name="stm32_trace_enabled" default="false"/>
     <xacro:arg name="stm32_trace_directory" default="/tmp/arm_stm32_traces"/>
     <xacro:arg name="stm32_trace_run_label" default=""/>
@@ -44,6 +47,7 @@
     <xacro:macro name="position_joint_interfaces" params="joint_name initial_value min_limit max_limit">
         <joint name="${joint_name}">
             <command_interface name="position"/>
+            <command_interface name="velocity"/>
             <param name="min">${min_limit}</param>
             <param name="max">${max_limit}</param>
             <state_interface name="position">
@@ -75,10 +79,13 @@
         stm32_control_mode:='0'
         stm32_kp:='50,50,50,50,50,50'
         stm32_kd:='2,2,2,2,2,2'
+        stm32_v_des_limits_rad_s:='1,1,1,1,1,1'
         stm32_heartbeat_duration_sec:='1.0'
         stm32_trigger_duration_sec:='3.0'
         stm32_feedback_wait_timeout_sec:='2.0'
         enable_stm32_zero_trigger:='false'
+        stm32_recover_safe_drop_on_start:='true'
+        stm32_recover_duration_sec:='0.25'
         stm32_trace_enabled:='false'
         stm32_trace_directory:='/tmp/arm_stm32_traces'
         stm32_trace_run_label:=''
@@ -122,10 +129,13 @@
                     <param name="stm32_control_mode">${stm32_control_mode}</param>
                     <param name="stm32_kp">${stm32_kp}</param>
                     <param name="stm32_kd">${stm32_kd}</param>
+                    <param name="stm32_v_des_limits_rad_s">${stm32_v_des_limits_rad_s}</param>
                     <param name="stm32_heartbeat_duration_sec">${stm32_heartbeat_duration_sec}</param>
                     <param name="stm32_trigger_duration_sec">${stm32_trigger_duration_sec}</param>
                     <param name="stm32_feedback_wait_timeout_sec">${stm32_feedback_wait_timeout_sec}</param>
                     <param name="enable_stm32_zero_trigger">${enable_stm32_zero_trigger}</param>
+                    <param name="stm32_recover_safe_drop_on_start">${stm32_recover_safe_drop_on_start}</param>
+                    <param name="stm32_recover_duration_sec">${stm32_recover_duration_sec}</param>
                     <param name="stm32_trace_enabled">${stm32_trace_enabled}</param>
                     <param name="stm32_trace_directory">${stm32_trace_directory}</param>
                     <param name="stm32_trace_run_label">${stm32_trace_run_label}</param>

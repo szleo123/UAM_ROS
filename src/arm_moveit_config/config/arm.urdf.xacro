@@ -19,10 +19,13 @@
     <xacro:arg name="stm32_control_mode" default="0" />
     <xacro:arg name="stm32_kp" default="50,50,50,50,50,50" />
     <xacro:arg name="stm32_kd" default="2,2,2,2,2,2" />
+    <xacro:arg name="stm32_v_des_limits_rad_s" default="1,1,1,1,1,1" />
     <xacro:arg name="stm32_heartbeat_duration_sec" default="1.0" />
     <xacro:arg name="stm32_trigger_duration_sec" default="3.0" />
     <xacro:arg name="stm32_feedback_wait_timeout_sec" default="2.0" />
     <xacro:arg name="enable_stm32_zero_trigger" default="false" />
+    <xacro:arg name="stm32_recover_safe_drop_on_start" default="true" />
+    <xacro:arg name="stm32_recover_duration_sec" default="0.25" />
     <xacro:arg name="stm32_trace_enabled" default="false" />
     <xacro:arg name="stm32_trace_directory" default="/tmp/arm_stm32_traces" />
     <xacro:arg name="stm32_trace_run_label" default="" />
@@ -98,10 +101,13 @@
       stm32_control_mode="$(arg stm32_control_mode)"
       stm32_kp="$(arg stm32_kp)"
       stm32_kd="$(arg stm32_kd)"
+      stm32_v_des_limits_rad_s="$(arg stm32_v_des_limits_rad_s)"
       stm32_heartbeat_duration_sec="$(arg stm32_heartbeat_duration_sec)"
       stm32_trigger_duration_sec="$(arg stm32_trigger_duration_sec)"
       stm32_feedback_wait_timeout_sec="$(arg stm32_feedback_wait_timeout_sec)"
       enable_stm32_zero_trigger="$(arg enable_stm32_zero_trigger)"
+      stm32_recover_safe_drop_on_start="$(arg stm32_recover_safe_drop_on_start)"
+      stm32_recover_duration_sec="$(arg stm32_recover_duration_sec)"
       stm32_trace_enabled="$(arg stm32_trace_enabled)"
       stm32_trace_directory="$(arg stm32_trace_directory)"
       stm32_trace_run_label="$(arg stm32_trace_run_label)"

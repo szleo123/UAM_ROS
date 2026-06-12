@@ -45,6 +45,7 @@ geomagic_cartesian_teleop:
     orientation_enabled: true
     robot_axes_from_device: ["x", "y", "z"]
     robot_angular_axes_from_device: ["x", "y", "z"]
+    angular_control_axes: [true, true, true]  # local tool x/y/z
     zero_on_release: true
 
 teleop_safety_filter:

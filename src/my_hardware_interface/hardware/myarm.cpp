@@ -62,6 +62,7 @@ constexpr uint8_t kStm32ModePositionOnly = 0;
 constexpr uint8_t kStm32ModePositionTorque = 1;
 constexpr uint8_t kStm32ModeFullMit = 2;
 constexpr uint8_t kStm32ModeTriggerHoming = 0x10;
+constexpr uint8_t kStm32ModeClearSafeDrop = 0x7E;
 constexpr uint8_t kStm32ModeSafeLock = 0xFF;
 constexpr double kMinPeriodSec = 1e-6;
 constexpr double kGripperUnitsMin = 60.0;
@@ -512,19 +513,29 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
 
   hw_states_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
   hw_commands_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
+  hw_command_velocities_.resize(info_.joints.size(), 0.0);
   hw_velocities_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
   hw_efforts_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
   last_sent_commands_.assign(hw_states_.size(), std::numeric_limits<double>::quiet_NaN());
 
-  // Validate joint interfaces (position command, position/velocity[/effort] state)
+  // Validate joint interfaces (position[/velocity] command, position/velocity[/effort] state)
   for (const hardware_interface::ComponentInfo & joint : info_.joints)
   {
-    if (joint.command_interfaces.size() != 1 || 
+    if (joint.command_interfaces.empty() ||
+        joint.command_interfaces.size() > 2 ||
         joint.command_interfaces[0].name != hardware_interface::HW_IF_POSITION)
     {
       RCLCPP_FATAL(
-        get_logger(), "Joint '%s' must expose exactly one '%s' command interfaces.",
-        joint.name.c_str(), hardware_interface::HW_IF_POSITION);
+        get_logger(), "Joint '%s' must expose '%s' plus optional '%s' command interface.",
+        joint.name.c_str(), hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY);
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+    if (joint.command_interfaces.size() == 2 &&
+        joint.command_interfaces[1].name != hardware_interface::HW_IF_VELOCITY)
+    {
+      RCLCPP_FATAL(
+        get_logger(), "Joint '%s' second command interface must be '%s' when present.",
+        joint.name.c_str(), hardware_interface::HW_IF_VELOCITY);
       return hardware_interface::CallbackReturn::ERROR;
     }
     if (joint.state_interfaces.empty() ||
@@ -640,6 +651,19 @@ hardware_interface::CallbackReturn MyArmHardware::on_activate(
 {
   RCLCPP_INFO(get_logger(), "Activating STM32 protocol...");
 
+  if (serial_ok_ && stm32_recover_safe_drop_on_start_)
+  {
+    RCLCPP_WARN(
+      get_logger(),
+      "Sending deliberate STM32 safe-drop recovery frames for %.2fs. "
+      "This clears a latched USB-loss state from a previous ROS session.",
+      stm32_recover_duration_sec_);
+    const auto recovery_frame =
+      build_stm32_command_frame(kStm32ModeClearSafeDrop, std::array<double, 6>{}, true);
+    if (!pump_stm32_boot_phase(recovery_frame, stm32_recover_duration_sec_, "safe drop recovery"))
+      return hardware_interface::CallbackReturn::ERROR;
+  }
+
   if (serial_ok_ && first_power_on_)
   {
     RCLCPP_WARN(
@@ -750,6 +774,15 @@ MyArmHardware::export_command_interfaces()
     command_interfaces.emplace_back(
       hardware_interface::CommandInterface(
         info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_commands_[i]));
+    for (size_t j = 1; j < info_.joints[i].command_interfaces.size(); ++j)
+    {
+      if (info_.joints[i].command_interfaces[j].name == hardware_interface::HW_IF_VELOCITY)
+      {
+        command_interfaces.emplace_back(
+          hardware_interface::CommandInterface(
+            info_.joints[i].name, hardware_interface::HW_IF_VELOCITY, &hw_command_velocities_[i]));
+      }
+    }
   }
 
   return command_interfaces;
@@ -1087,6 +1120,7 @@ void MyArmHardware::reset_joint_buffers(double value)
 {
   reset_vector(hw_states_, value);
   reset_vector(hw_commands_, value);
+  reset_vector(hw_command_velocities_, 0.0);
   reset_vector(hw_velocities_, value);
   reset_vector(hw_efforts_, 0.0);
 }
@@ -1096,6 +1130,9 @@ void MyArmHardware::sync_commands_to_states()
   if (hw_commands_.size() != hw_states_.size())
     hw_commands_.resize(hw_states_.size(), 0.0);
   std::copy(hw_states_.begin(), hw_states_.end(), hw_commands_.begin());
+  if (hw_command_velocities_.size() != hw_states_.size())
+    hw_command_velocities_.resize(hw_states_.size(), 0.0);
+  std::fill(hw_command_velocities_.begin(), hw_command_velocities_.end(), 0.0);
 }
 
 size_t MyArmHardware::arm_joint_count() const
@@ -1142,6 +1179,13 @@ void MyArmHardware::parse_stm32_parameters()
       stm32_kd_[i] = std::max(0.0, std::stod(values[i]));
   }
 
+  if (info_.hardware_parameters.count("stm32_v_des_limits_rad_s"))
+  {
+    const auto values = split_list(info_.hardware_parameters.at("stm32_v_des_limits_rad_s"));
+    for (size_t i = 0; i < values.size() && i < stm32_v_des_limits_rad_s_.size(); ++i)
+      stm32_v_des_limits_rad_s_[i] = std::max(0.0, std::stod(values[i]));
+  }
+
   if (info_.hardware_parameters.count("stm32_heartbeat_duration_sec"))
     stm32_heartbeat_duration_sec_ =
       std::max(0.0, std::stod(info_.hardware_parameters.at("stm32_heartbeat_duration_sec")));
@@ -1154,6 +1198,12 @@ void MyArmHardware::parse_stm32_parameters()
   if (info_.hardware_parameters.count("enable_stm32_zero_trigger"))
     enable_stm32_zero_trigger_ =
       string_to_bool(info_.hardware_parameters.at("enable_stm32_zero_trigger"));
+  if (info_.hardware_parameters.count("stm32_recover_safe_drop_on_start"))
+    stm32_recover_safe_drop_on_start_ =
+      string_to_bool(info_.hardware_parameters.at("stm32_recover_safe_drop_on_start"));
+  if (info_.hardware_parameters.count("stm32_recover_duration_sec"))
+    stm32_recover_duration_sec_ =
+      std::max(0.0, std::stod(info_.hardware_parameters.at("stm32_recover_duration_sec")));
 
   if (info_.hardware_parameters.count("stm32_trace_enabled"))
     stm32_trace_enabled_ =
@@ -1532,6 +1582,8 @@ void MyArmHardware::open_stm32_trace()
       for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
         stm32_trace_stream_ << ",cmd_j" << (i + 1);
       for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+        stm32_trace_stream_ << ",cmd_vel_j" << (i + 1);
+      for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
         stm32_trace_stream_ << ",fb_pos_j" << (i + 1);
       for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
         stm32_trace_stream_ << ",err_pos_j" << (i + 1);
@@ -1602,6 +1654,13 @@ void MyArmHardware::trace_stm32_sample(
   for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
   {
     const double value = i < hw_commands_.size() && std::isfinite(hw_commands_[i]) ? hw_commands_[i] : 0.0;
+    stm32_trace_stream_ << ',' << value;
+  }
+  for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+  {
+    const double value =
+      i < hw_command_velocities_.size() && std::isfinite(hw_command_velocities_[i]) ?
+      hw_command_velocities_[i] : 0.0;
     stm32_trace_stream_ << ',' << value;
   }
   for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
@@ -1727,8 +1786,13 @@ std::vector<uint8_t> MyArmHardware::build_stm32_command_frame(
 
     const bool has_joint = i < arm_joint_count() && i < hw_commands_.size();
     const double command = has_joint && std::isfinite(hw_commands_[i]) ? hw_commands_[i] : 0.0;
-    const double velocity = i < hw_velocities_.size() && std::isfinite(hw_velocities_[i]) ?
-      hw_velocities_[i] : 0.0;
+    const double raw_velocity =
+      has_joint && i < hw_command_velocities_.size() && std::isfinite(hw_command_velocities_[i]) ?
+      hw_command_velocities_[i] : 0.0;
+    const double velocity_limit = i < stm32_v_des_limits_rad_s_.size() ?
+      stm32_v_des_limits_rad_s_[i] : 0.0;
+    const double velocity = velocity_limit > 0.0 ?
+      std::clamp(raw_velocity, -velocity_limit, velocity_limit) : 0.0;
 
     packet.motors[i].p_des = static_cast<float>(command);
     packet.motors[i].v_des = static_cast<float>(

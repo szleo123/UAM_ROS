@@ -33,10 +33,13 @@ STM32_ARGUMENT_NAMES = [
     "stm32_control_mode",
     "stm32_kp",
     "stm32_kd",
+    "stm32_v_des_limits_rad_s",
     "stm32_heartbeat_duration_sec",
     "stm32_trigger_duration_sec",
     "stm32_feedback_wait_timeout_sec",
     "enable_stm32_zero_trigger",
+    "stm32_recover_safe_drop_on_start",
+    "stm32_recover_duration_sec",
     "stm32_trace_enabled",
     "stm32_trace_directory",
     "stm32_trace_run_label",
@@ -225,6 +228,14 @@ def common_bringup_launch_arguments(
             ),
         ),
         DeclareLaunchArgument(
+            "stm32_v_des_limits_rad_s",
+            default_value="2.0,2.0,2.0,2.0,2.0,2.0",
+            description=(
+                "Comma-separated per-joint absolute clamps for velocity commands sent "
+                "to STM32 v_des in full MIT mode."
+            ),
+        ),
+        DeclareLaunchArgument(
             "stm32_heartbeat_duration_sec",
             default_value="1.0",
             description="Duration of 100 Hz safe-lock heartbeat frames during STM32 boot.",
@@ -249,6 +260,19 @@ def common_bringup_launch_arguments(
                 "Enable the operator Confirm Drop Pose packet that triggers STM32 joint-3 zeroing. "
                 "Keep false on hardware until the MCU zeroing sequence is bench-validated."
             ),
+        ),
+        DeclareLaunchArgument(
+            "stm32_recover_safe_drop_on_start",
+            default_value="true",
+            description=(
+                "Send a deliberate recovery frame at activation to clear an STM32 safe-drop latch "
+                "from a previous ROS session. USB replug alone still cannot recover the latch."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "stm32_recover_duration_sec",
+            default_value="2.0",
+            description="Duration of 100 Hz STM32 safe-drop recovery frames at activation.",
         ),
         DeclareLaunchArgument(
             "stm32_trace_enabled",
@@ -298,7 +322,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "gripper_port",
-            default_value="/dev/ttyUSB1",
+            default_value="/dev/ttyUSB0",
             description="Serial port for the gripper or auxiliary joint controller.",
         ),
         DeclareLaunchArgument(
@@ -356,7 +380,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "dynamics_torque_scale",
-            default_value="1.0,1.0,1.0,1.0,1.0,1.0",
+            default_value="1.0,1.0,0.35,1.0,1.0,1.0",
             description=(
                 "Torque multiplier applied before clamping. Use one value for all joints "
                 "or six comma-separated values for joint_1..joint_6."
@@ -573,10 +597,13 @@ def robot_description_mappings():
         "stm32_control_mode": LaunchConfiguration("stm32_control_mode"),
         "stm32_kp": LaunchConfiguration("stm32_kp"),
         "stm32_kd": LaunchConfiguration("stm32_kd"),
+        "stm32_v_des_limits_rad_s": LaunchConfiguration("stm32_v_des_limits_rad_s"),
         "stm32_heartbeat_duration_sec": LaunchConfiguration("stm32_heartbeat_duration_sec"),
         "stm32_trigger_duration_sec": LaunchConfiguration("stm32_trigger_duration_sec"),
         "stm32_feedback_wait_timeout_sec": LaunchConfiguration("stm32_feedback_wait_timeout_sec"),
         "enable_stm32_zero_trigger": LaunchConfiguration("enable_stm32_zero_trigger"),
+        "stm32_recover_safe_drop_on_start": LaunchConfiguration("stm32_recover_safe_drop_on_start"),
+        "stm32_recover_duration_sec": LaunchConfiguration("stm32_recover_duration_sec"),
         "stm32_trace_enabled": LaunchConfiguration("stm32_trace_enabled"),
         "stm32_trace_directory": LaunchConfiguration("stm32_trace_directory"),
         "stm32_trace_run_label": LaunchConfiguration("stm32_trace_run_label"),

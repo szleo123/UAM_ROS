@@ -23,6 +23,7 @@ class DirectJointStep(Node):
         self.declare_parameter("delta_rad", 0.10)
         self.declare_parameter("goal_positions", "")
         self.declare_parameter("duration_s", 2.0)
+        self.declare_parameter("speed_rad_s", 0.0)
         self.declare_parameter(
             "arm_joints",
             ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"],
@@ -34,6 +35,7 @@ class DirectJointStep(Node):
         self.delta_rad = float(self.get_parameter("delta_rad").value)
         self.goal_positions = self.parse_goal_positions(self.get_parameter("goal_positions").value)
         self.duration_s = float(self.get_parameter("duration_s").value)
+        self.speed_rad_s = abs(float(self.get_parameter("speed_rad_s").value))
         self.arm_joints = list(self.get_parameter("arm_joints").value)
 
         if self.joint_name not in self.arm_joints:
@@ -53,14 +55,24 @@ class DirectJointStep(Node):
 
         if self.goal_positions:
             goal_text = ", ".join(f"{value:.3f}" for value in self.goal_positions)
+            timing_text = (
+                f"at {self.speed_rad_s:.3f} rad/s"
+                if self.speed_rad_s > 0.0
+                else f"over {self.duration_s:.2f}s"
+            )
             self.get_logger().warn(
                 f"Waiting for joint states, then publishing absolute goal "
-                f"[{goal_text}] over {self.duration_s:.2f}s to {self.joint_trajectory_topic}"
+                f"[{goal_text}] {timing_text} to {self.joint_trajectory_topic}"
             )
         else:
+            timing_text = (
+                f"at {self.speed_rad_s:.3f} rad/s"
+                if self.speed_rad_s > 0.0
+                else f"over {self.duration_s:.2f}s"
+            )
             self.get_logger().warn(
                 f"Waiting for joint states, then publishing {self.joint_name} += "
-                f"{self.delta_rad:.3f} rad over {self.duration_s:.2f}s to {self.joint_trajectory_topic}"
+                f"{self.delta_rad:.3f} rad {timing_text} to {self.joint_trajectory_topic}"
             )
 
     def joint_state_callback(self, msg: JointState) -> None:
@@ -80,9 +92,22 @@ class DirectJointStep(Node):
             positions = [self.latest_positions[joint] for joint in self.arm_joints]
             positions[self.arm_joints.index(self.joint_name)] += self.delta_rad
 
+        deltas = [
+            positions[i] - self.latest_positions[joint]
+            for i, joint in enumerate(self.arm_joints)
+        ]
+        duration_s = self.duration_s
+        if self.speed_rad_s > 0.0:
+            max_delta = max(abs(delta) for delta in deltas)
+            duration_s = max(max_delta / self.speed_rad_s, 0.1)
+
         point = JointTrajectoryPoint()
         point.positions = positions
-        point.time_from_start = Duration(seconds=self.duration_s).to_msg()
+        point.velocities = [
+            delta / duration_s if duration_s > 0.0 else 0.0
+            for delta in deltas
+        ]
+        point.time_from_start = Duration(seconds=duration_s).to_msg()
 
         msg = JointTrajectory()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -91,7 +116,7 @@ class DirectJointStep(Node):
 
         self.pub.publish(msg)
         self.published = True
-        self.get_logger().warn("Published direct joint step.")
+        self.get_logger().warn(f"Published direct joint step over {duration_s:.3f}s.")
 
     @staticmethod
     def parse_goal_positions(value) -> List[float]:

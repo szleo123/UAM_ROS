@@ -332,7 +332,7 @@
       lower="0"
       upper="3.1416"
       effort="100"
-      velocity="2.0" />
+      velocity="1.0" />
   </joint>
   <link
     name="link_6">

@@ -211,7 +211,7 @@
   <joint name="tool0_fixed" type="fixed">
     <parent link="link_6"/>
     <child link="tool0"/>
-    <origin rpy="0 0 0" xyz="0 0.01 0.2"/>
+    <origin rpy="0 0 0" xyz="-0.03 0 0.018"/>
   </joint>
   <joint name="tool_base_fixed" type="fixed">
     <parent link="link_6"/>

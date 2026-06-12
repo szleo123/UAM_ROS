@@ -147,6 +147,7 @@ class GeomagicCartesianTeleop(Node):
         self.declare_parameter("orientation_enabled", False)
         self.declare_parameter("robot_axes_from_device", ["y", "-x", "z"])
         self.declare_parameter("robot_angular_axes_from_device", ["y", "-x", "z"])
+        self.declare_parameter("angular_control_axes", [True, True, True])
         self.declare_parameter("zero_on_release", True)
 
         self.input_pose_topic = self.get_parameter("input_pose_topic").value
@@ -172,6 +173,14 @@ class GeomagicCartesianTeleop(Node):
         self.angular_axis_map = [
             parse_axis_token(token) for token in self.get_parameter("robot_angular_axes_from_device").value
         ]
+        self.angular_control_axes = [
+            as_bool(value) for value in self.get_parameter("angular_control_axes").value
+        ]
+        if len(self.angular_control_axes) != 3:
+            self.get_logger().warn(
+                "angular_control_axes must contain exactly three booleans; using all axes."
+            )
+            self.angular_control_axes = [True, True, True]
 
         self.latest_pose: Optional[PoseStamped] = None
         self.latest_pose_time = self.get_clock().now()
@@ -303,6 +312,10 @@ class GeomagicCartesianTeleop(Node):
         for index, sign in self.angular_axis_map:
             angular.append(sign * apply_deadband(device_rotvec[index], self.orientation_deadband))
         angular = [self.rotation_gain * value for value in angular]
+        angular = [
+            value if enabled else 0.0
+            for value, enabled in zip(angular, self.angular_control_axes)
+        ]
         angular = clamp_vector(angular, self.max_angular_speed)
         return self.angular_to_command_frame(angular)
 
@@ -357,6 +370,7 @@ class GeomagicCartesianTeleop(Node):
             f"filtered_angular=({self.filtered_angular[0]:.4f},{self.filtered_angular[1]:.4f},{self.filtered_angular[2]:.4f}); "
             f"pose=({self.last_pose_position[0]:.4f},{self.last_pose_position[1]:.4f},{self.last_pose_position[2]:.4f}); "
             f"orientation={int(self.orientation_enabled)}; angular_frame={self.angular_command_frame}; "
+            f"angular_axes=({int(self.angular_control_axes[0])},{int(self.angular_control_axes[1])},{int(self.angular_control_axes[2])}); "
             f"output={self.output_twist_topic}"
         )
         self.status_pub.publish(msg)

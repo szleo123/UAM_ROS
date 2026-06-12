@@ -235,7 +235,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "check_collisions",
-                default_value="true",
+                default_value="false",
                 description="Enable MoveIt Servo collision checking.",
             ),
             geomagic_driver_node,

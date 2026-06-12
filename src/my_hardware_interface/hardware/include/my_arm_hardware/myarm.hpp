@@ -135,11 +135,14 @@ private:
   Stm32ControlMode stm32_control_mode_{Stm32ControlMode::POSITION_ONLY};
   std::array<double, 6> stm32_kp_{{50.0, 50.0, 50.0, 50.0, 50.0, 50.0}};
   std::array<double, 6> stm32_kd_{{2.0, 2.0, 2.0, 2.0, 2.0, 2.0}};
+  std::array<double, 6> stm32_v_des_limits_rad_s_{{1.0, 1.0, 1.0, 1.0, 1.0, 1.0}};
   std::mutex stm32_gain_mtx_;
   double stm32_heartbeat_duration_sec_{1.0};
   double stm32_trigger_duration_sec_{3.0};
   double stm32_feedback_wait_timeout_sec_{2.0};
   bool enable_stm32_zero_trigger_{false};
+  bool stm32_recover_safe_drop_on_start_{true};
+  double stm32_recover_duration_sec_{0.25};
 
   ArmCommandFrameFormat arm_command_frame_format_{ArmCommandFrameFormat::LEGACY_POSITION};
   bool enable_dynamics_feedforward_{false};
@@ -174,6 +177,7 @@ private:
 
   // Store the command for the simulated robot
   std::vector<double> hw_commands_;
+  std::vector<double> hw_command_velocities_;
   std::vector<double> hw_states_;
   std::vector<double> hw_velocities_;
   std::vector<double> hw_efforts_;

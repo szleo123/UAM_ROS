@@ -35,16 +35,17 @@ geomagic_cartesian_teleop:
     publish_rate_hz: 50.0
     input_timeout_s: 0.25
     deadman_button_index: 0
-    translation_gain: 2.0
-    translation_deadband_m: 0.01
-    rotation_gain: 5.0
+    translation_gain: 3.0
+    translation_deadband_m: 0.003
+    rotation_gain: 2.5
     orientation_deadband_rad: 0.1
-    max_linear_speed_m_s: 0.2
-    max_angular_speed_rad_s: 0.5
-    low_pass_alpha: 0.6
+    max_linear_speed_m_s: 0.12
+    max_angular_speed_rad_s: 0.35
+    low_pass_alpha: 0.75
     orientation_enabled: true
-    robot_axes_from_device: ["-x", "-y", "z"]
-    robot_angular_axes_from_device: ["-x", "-y", "z"]
+    robot_axes_from_device: ["-y", "x", "z"]
+    robot_angular_axes_from_device: ["-y", "x", "z"]
+    angular_control_axes: [false, false, true]  # local tool x/y/z
     zero_on_release: true
 
 teleop_safety_filter:
@@ -64,13 +65,13 @@ teleop_safety_filter:
     require_deadman: true
     require_homing: false
     require_tool_tf: true
-    low_pass_alpha: 0.6
-    max_linear_accel_m_s2: 0.4
-    max_angular_accel_rad_s2: 0.20
+    low_pass_alpha: 0.45
+    max_linear_accel_m_s2: 0.3
+    max_angular_accel_rad_s2: 0.35
     workspace_min: [-10.0, -10.0, -10.0]
     workspace_max: [10.0, 10.0, 10.0]
-    max_linear_m_s: 0.1
-    max_angular_rad_s: 0.5
+    max_linear_m_s: 0.12
+    max_angular_rad_s: 0.35
 
 trajectory_deadman_gate:
   ros__parameters:
@@ -96,6 +97,6 @@ trajectory_deadman_gate:
     hold_duration_s: 0.20
     integrate_servo_deltas: true
     integrated_command_scale: 1.0
-    max_integrated_step_rad: 0.003
-    integrated_command_duration_s: 0.25
+    max_integrated_step_rad: 0.004
+    integrated_command_duration_s: 0.18
     integrated_publish_rate_hz: 30.0
