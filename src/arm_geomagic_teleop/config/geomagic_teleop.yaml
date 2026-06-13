@@ -32,20 +32,19 @@ geomagic_cartesian_teleop:
     command_frame: uav_mount
     ee_frame_name: tool0
     angular_command_frame: tool0
-    publish_rate_hz: 50.0
+    publish_rate_hz: 200.0
     input_timeout_s: 0.25
     deadman_button_index: 0
     translation_gain: 3.0
-    translation_deadband_m: 0.003
+    translation_deadband_m: 0.005
     rotation_gain: 2.5
-    orientation_deadband_rad: 0.1
+    orientation_deadband_rad: 1.5
     max_linear_speed_m_s: 0.12
     max_angular_speed_rad_s: 0.35
-    low_pass_alpha: 0.75
+    low_pass_alpha: 0.3
     orientation_enabled: true
     robot_axes_from_device: ["-y", "x", "z"]
     robot_angular_axes_from_device: ["-y", "x", "z"]
-    angular_control_axes: [false, false, true]  # local tool x/y/z
     zero_on_release: true
 
 teleop_safety_filter:
@@ -57,7 +56,7 @@ teleop_safety_filter:
     status_topic: /arm_teleop/safety_status
     command_frame: uav_mount
     ee_frame_name: tool0
-    publish_rate_hz: 50.0
+    publish_rate_hz: 100.0
     input_timeout_s: 0.25
     button_timeout_s: 0.25
     homing_timeout_s: 2.0
@@ -65,7 +64,7 @@ teleop_safety_filter:
     require_deadman: true
     require_homing: false
     require_tool_tf: true
-    low_pass_alpha: 0.45
+    low_pass_alpha: 0.2
     max_linear_accel_m_s2: 0.3
     max_angular_accel_rad_s2: 0.35
     workspace_min: [-10.0, -10.0, -10.0]
@@ -90,13 +89,27 @@ trajectory_deadman_gate:
     button_timeout_s: 0.25
     twist_timeout_s: 0.25
     homing_timeout_s: 2.0
-    min_linear_speed_m_s: 0.00001
-    min_angular_speed_rad_s: 0.0001
+    min_linear_speed_m_s: 0.003
+    min_angular_speed_rad_s: 0.01
     armed_on_start: true
     publish_hold_on_block: true
     hold_duration_s: 0.20
     integrate_servo_deltas: true
     integrated_command_scale: 1.0
-    max_integrated_step_rad: 0.004
-    integrated_command_duration_s: 0.18
-    integrated_publish_rate_hz: 30.0
+    max_integrated_step_rad: 0.002
+    integrated_command_duration_s: 0.1
+    integrated_publish_rate_hz: 100.0
+
+trajectory_command_monitor:
+  ros__parameters:
+    trajectory_topic: /arm_controller/joint_trajectory
+    joint_names: ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
+    plot: true
+    plot_history_sec: 15.0
+    plot_rate_hz: 10.0
+    position_abs_rad: 3.2
+    step_abs_rad: 0.006
+    velocity_abs_rad_s: 0.5
+    csv_enabled: false
+    csv_file: /tmp/teleop_final_command.csv
+    csv_append: false

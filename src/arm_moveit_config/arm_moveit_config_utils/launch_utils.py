@@ -24,6 +24,7 @@ HARDWARE_ARGUMENT_NAMES = [
     "arm_joint_signs",
     "arm_joint_offsets",
     "hw_slowdown",
+    "feedback_velocity_low_pass_alpha",
     "initial_read_timeout_sec",
     "first_power_on",
     "ros2_controllers_file",
@@ -74,6 +75,11 @@ DYNAMICS_ARGUMENT_NAMES = [
     "dynamics_monitor_mode",
     "dynamics_monitor_plot",
     "dynamics_monitor_plot_history_sec",
+    "start_manual_torque_tuner",
+    "manual_torque_initial_nm",
+    "manual_torque_abs_max_nm",
+    "manual_torque_publish_rate_hz",
+    "manual_torque_live_update",
 ]
 
 JOINT_FEEDBACK_MONITOR_ARGUMENT_NAMES = [
@@ -85,6 +91,8 @@ JOINT_FEEDBACK_MONITOR_ARGUMENT_NAMES = [
     "joint_feedback_monitor_min_rad",
     "joint_feedback_monitor_max_rad",
     "joint_feedback_monitor_velocity_abs",
+    "joint_feedback_monitor_show_raw_velocity",
+    "joint_feedback_monitor_raw_velocity_topic",
     "joint_feedback_monitor_torque_abs",
     "joint_feedback_monitor_csv_enabled",
     "joint_feedback_monitor_csv_file",
@@ -181,6 +189,14 @@ def common_bringup_launch_arguments(
             "hw_slowdown",
             default_value="10",
             description="Hardware slowdown factor passed to the ros2_control plugin.",
+        ),
+        DeclareLaunchArgument(
+            "feedback_velocity_low_pass_alpha",
+            default_value="0.25",
+            description=(
+                "Low-pass alpha for STM32 velocity feedback state, one value or six "
+                "comma-separated values. 1.0 is raw velocity, lower is smoother."
+            ),
         ),
         DeclareLaunchArgument(
             "initial_read_timeout_sec",
@@ -380,7 +396,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "dynamics_torque_scale",
-            default_value="1.0,1.0,0.35,1.0,1.0,1.0",
+            default_value="1.0,1.0,1.0,1.0,1.0,1.0",
             description=(
                 "Torque multiplier applied before clamping. Use one value for all joints "
                 "or six comma-separated values for joint_1..joint_6."
@@ -426,6 +442,37 @@ def common_bringup_launch_arguments(
             default_value="15.0",
             description="Seconds of torque history shown in the live dynamics plot.",
         ),
+        DeclareLaunchArgument(
+            "start_manual_torque_tuner",
+            default_value="false",
+            description=(
+                "Launch a manual torque feedforward tuner that publishes to "
+                "dynamics_feedforward_topic. Use with start_dynamics_monitor=false."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "manual_torque_initial_nm",
+            default_value="0.0,0.0,0.0,0.0,0.0,0.0",
+            description="Initial manual torque feedforward values in Nm for joint_1..joint_6.",
+        ),
+        DeclareLaunchArgument(
+            "manual_torque_abs_max_nm",
+            default_value="10.0,10.0,10.0,10.0,10.0,10.0",
+            description="Per-joint absolute slider limits for manual torque feedforward in Nm.",
+        ),
+        DeclareLaunchArgument(
+            "manual_torque_publish_rate_hz",
+            default_value="20.0",
+            description=(
+                "Continuous publish rate for manual torque feedforward. Keep this faster "
+                "than dynamics_topic_timeout_sec."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "manual_torque_live_update",
+            default_value="false",
+            description="Publish manual torque changes while sliders move.",
+        ),
     ]
 
     joint_feedback_monitor_args = [
@@ -468,6 +515,16 @@ def common_bringup_launch_arguments(
             "joint_feedback_monitor_velocity_abs",
             default_value="2.0",
             description="Initial symmetric velocity plot range in rad/s.",
+        ),
+        DeclareLaunchArgument(
+            "joint_feedback_monitor_show_raw_velocity",
+            default_value="false",
+            description="Overlay unfiltered STM32 velocity feedback on the live velocity plot.",
+        ),
+        DeclareLaunchArgument(
+            "joint_feedback_monitor_raw_velocity_topic",
+            default_value="/my_arm_system/raw_feedback_velocities_rad_s",
+            description="Topic used by the live monitor for unfiltered STM32 velocity feedback.",
         ),
         DeclareLaunchArgument(
             "joint_feedback_monitor_torque_abs",
@@ -589,6 +646,7 @@ def robot_description_mappings():
         "arm_joint_signs": LaunchConfiguration("arm_joint_signs"),
         "arm_joint_offsets": LaunchConfiguration("arm_joint_offsets"),
         "hw_slowdown": LaunchConfiguration("hw_slowdown"),
+        "feedback_velocity_low_pass_alpha": LaunchConfiguration("feedback_velocity_low_pass_alpha"),
         "initial_read_timeout_sec": LaunchConfiguration("initial_read_timeout_sec"),
         "first_power_on": LaunchConfiguration("first_power_on"),
         "aux_joint_min": LaunchConfiguration("aux_joint_min"),

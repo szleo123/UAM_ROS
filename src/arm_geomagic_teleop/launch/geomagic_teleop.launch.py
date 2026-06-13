@@ -99,6 +99,19 @@ def _setup(context, *args, **kwargs):
                 },
             ],
         ),
+        Node(
+            package="arm_geomagic_teleop",
+            executable="trajectory_command_monitor",
+            name="trajectory_command_monitor",
+            output="screen",
+            parameters=[
+                config_file,
+                {
+                    "trajectory_topic": output_trajectory_topic,
+                },
+            ],
+            condition=IfCondition(LaunchConfiguration("start_trajectory_command_monitor")),
+        ),
     ]
 
     return nodes
@@ -237,6 +250,11 @@ def generate_launch_description():
                 "check_collisions",
                 default_value="false",
                 description="Enable MoveIt Servo collision checking.",
+            ),
+            DeclareLaunchArgument(
+                "start_trajectory_command_monitor",
+                default_value="true",
+                description="Plot the final JointTrajectory command sent to ros2_control.",
             ),
             geomagic_driver_node,
             adapter_node,

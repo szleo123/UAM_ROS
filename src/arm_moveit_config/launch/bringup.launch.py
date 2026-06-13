@@ -178,6 +178,7 @@ def generate_launch_description():
             moveit_config.robot_description,
             {
                 "joint_names": "joint_1,joint_2,joint_3,joint_4,joint_5,joint_6",
+                "output_topic": LaunchConfiguration("dynamics_feedforward_topic"),
                 "rate_hz": LaunchConfiguration("dynamics_monitor_rate_hz"),
                 "mode": LaunchConfiguration("dynamics_monitor_mode"),
                 "torque_scale": LaunchConfiguration("dynamics_torque_scale"),
@@ -188,6 +189,24 @@ def generate_launch_description():
             },
         ],
         condition=IfCondition(LaunchConfiguration("start_dynamics_monitor")),
+    )
+
+    manual_torque_tuner = Node(
+        package="my_arm_hardware",
+        executable="manual_torque_tuner.py",
+        name="manual_torque_tuner",
+        output="screen",
+        parameters=[
+            {
+                "output_topic": LaunchConfiguration("dynamics_feedforward_topic"),
+                "joint_names": "joint_1,joint_2,joint_3,joint_4,joint_5,joint_6",
+                "initial_torques_nm": LaunchConfiguration("manual_torque_initial_nm"),
+                "torque_abs_max_nm": LaunchConfiguration("manual_torque_abs_max_nm"),
+                "publish_rate_hz": LaunchConfiguration("manual_torque_publish_rate_hz"),
+                "live_update": LaunchConfiguration("manual_torque_live_update"),
+            }
+        ],
+        condition=IfCondition(LaunchConfiguration("start_manual_torque_tuner")),
     )
 
     joint_feedback_monitor = Node(
@@ -205,6 +224,8 @@ def generate_launch_description():
                 "plot_min_rad": LaunchConfiguration("joint_feedback_monitor_min_rad"),
                 "plot_max_rad": LaunchConfiguration("joint_feedback_monitor_max_rad"),
                 "plot_velocity_abs": LaunchConfiguration("joint_feedback_monitor_velocity_abs"),
+                "plot_raw_velocity": LaunchConfiguration("joint_feedback_monitor_show_raw_velocity"),
+                "raw_velocity_topic": LaunchConfiguration("joint_feedback_monitor_raw_velocity_topic"),
                 "plot_torque_abs": LaunchConfiguration("joint_feedback_monitor_torque_abs"),
                 "csv_enabled": LaunchConfiguration("joint_feedback_monitor_csv_enabled"),
                 "csv_file": LaunchConfiguration("joint_feedback_monitor_csv_file"),
@@ -228,6 +249,7 @@ def generate_launch_description():
             homing_button,
             mit_gain_tuner,
             dynamics_monitor,
+            manual_torque_tuner,
             joint_feedback_monitor,
         ]
     )

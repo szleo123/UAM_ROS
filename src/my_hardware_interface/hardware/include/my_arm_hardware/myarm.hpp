@@ -207,6 +207,7 @@ private:
   double initial_read_timeout_sec_ = 2.0; 
   rclcpp::Time last_feedback_time_; // optional for diagnostics
   double feedback_stale_timeout_sec_ = 0.5;  // max allowed feedback age before writes stop
+  std::array<double, 6> feedback_velocity_low_pass_alpha_{{1.0, 1.0, 1.0, 1.0, 1.0, 1.0}};
   bool first_power_on_ = true;
 
   // Helpers 
@@ -240,6 +241,8 @@ private:
   std::vector<double> last_sent_commands_;
   void reset_joint_buffers(double value);
   void sync_commands_to_states();
+  double filter_feedback_velocity(size_t joint_index, double raw_velocity) const;
+  void publish_raw_feedback_velocities(const std::array<double, 6> & raw_velocities);
   size_t arm_joint_count() const;
   bool has_aux_joint() const;
   size_t aux_joint_index() const;
@@ -293,6 +296,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr stm32_sys_state_pub_;
   rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr stm32_control_mode_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr stm32_mit_gains_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr raw_feedback_velocity_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr dynamics_tau_pub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr dynamics_tau_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr stm32_mit_gains_sub_;
@@ -304,6 +308,7 @@ private:
   RosMasterHomingState homing_state_{RosMasterHomingState::WAITING_INIT_COMMAND};
   uint8_t last_stm32_sys_state_{std::numeric_limits<uint8_t>::max()};
   uint8_t last_stm32_write_mode_{std::numeric_limits<uint8_t>::max()};
+  std::array<double, 6> last_raw_feedback_velocities_{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
   std::array<double, 6> last_tau_ros_nm_{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
   std::array<double, 6> last_tau_hw_nm_{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
   bool stm32_trace_enabled_{false};

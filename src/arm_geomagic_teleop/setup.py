@@ -29,6 +29,7 @@ setup(
             "teleop_test_jog = arm_geomagic_teleop.teleop_test_jog:main",
             "direct_joint_step = arm_geomagic_teleop.direct_joint_step:main",
             "trajectory_delta_probe = arm_geomagic_teleop.trajectory_delta_probe:main",
+            "trajectory_command_monitor = arm_geomagic_teleop.trajectory_command_monitor:main",
         ],
     },
 )

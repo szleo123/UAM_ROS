@@ -34,6 +34,14 @@ def _finite_or_nan(value):
     return value if math.isfinite(value) else math.nan
 
 
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
 class JointFeedbackMonitor(Node):
     def __init__(self):
         super().__init__("joint_feedback_monitor")
@@ -42,6 +50,7 @@ class JointFeedbackMonitor(Node):
         self.declare_parameter("joint_names", "joint_1,joint_2,joint_3,joint_4,joint_5,joint_6")
         self.declare_parameter("joint_state_topic", "/joint_states")
         self.declare_parameter("controller_state_topic", "/arm_controller/controller_state")
+        self.declare_parameter("raw_velocity_topic", "/my_arm_system/raw_feedback_velocities_rad_s")
         self.declare_parameter("torque_reference_topic", "/my_arm_system/dynamics_tau_ff_nm")
         self.declare_parameter("output_error_topic", "/arm_joint_feedback/error_rad")
         self.declare_parameter("rate_hz", 50.0, dynamic_param)
@@ -52,6 +61,7 @@ class JointFeedbackMonitor(Node):
         self.declare_parameter("plot_min_rad", -1.0, dynamic_param)
         self.declare_parameter("plot_max_rad", 1.0, dynamic_param)
         self.declare_parameter("plot_velocity_abs", 2.0, dynamic_param)
+        self.declare_parameter("plot_raw_velocity", False, dynamic_param)
         self.declare_parameter("plot_torque_abs", 5.0, dynamic_param)
         self.declare_parameter("csv_enabled", False, dynamic_param)
         self.declare_parameter("csv_file", "/tmp/joint_monitor.csv")
@@ -59,7 +69,7 @@ class JointFeedbackMonitor(Node):
 
         self.joint_names = _parse_csv(self.get_parameter("joint_names").value, str)
         self.state_timeout_sec = float(self.get_parameter("state_timeout_sec").value)
-        self.plot_enabled = bool(self.get_parameter("plot").value)
+        self.plot_enabled = _as_bool(self.get_parameter("plot").value)
         self.plot_history_sec = max(float(self.get_parameter("plot_history_sec").value), 1.0)
         self.plot_rate_hz = max(float(self.get_parameter("plot_rate_hz").value), 1.0)
         self.plot_min_rad = float(self.get_parameter("plot_min_rad").value)
@@ -67,21 +77,24 @@ class JointFeedbackMonitor(Node):
         if self.plot_min_rad > self.plot_max_rad:
             self.plot_min_rad, self.plot_max_rad = self.plot_max_rad, self.plot_min_rad
         self.plot_velocity_abs = abs(float(self.get_parameter("plot_velocity_abs").value))
+        self.plot_raw_velocity = _as_bool(self.get_parameter("plot_raw_velocity").value)
         self.plot_torque_abs = abs(float(self.get_parameter("plot_torque_abs").value))
-        self.csv_enabled = bool(self.get_parameter("csv_enabled").value)
+        self.csv_enabled = _as_bool(self.get_parameter("csv_enabled").value)
         self.csv_path = Path(str(self.get_parameter("csv_file").value))
-        self.csv_append = bool(self.get_parameter("csv_append").value)
+        self.csv_append = _as_bool(self.get_parameter("csv_append").value)
 
         self.state_lock = threading.Lock()
         self.latest = {
             "position_feedback": None,
             "position_reference": None,
             "velocity_feedback": None,
+            "velocity_feedback_raw": None,
             "velocity_reference": None,
             "torque_feedback": None,
             "torque_reference": None,
         }
         self.latest_state_time = None
+        self.latest_raw_velocity_time = None
         self.latest_reference_time = None
         self.latest_torque_reference_time = None
 
@@ -108,6 +121,12 @@ class JointFeedbackMonitor(Node):
         )
         self.create_subscription(
             Float64MultiArray,
+            str(self.get_parameter("raw_velocity_topic").value),
+            self._on_raw_velocity,
+            20,
+        )
+        self.create_subscription(
+            Float64MultiArray,
             str(self.get_parameter("torque_reference_topic").value),
             self._on_torque_reference,
             10,
@@ -129,7 +148,7 @@ class JointFeedbackMonitor(Node):
 
         self.get_logger().warn(
             f"Joint feedback monitor ready: joints={self.joint_names}, "
-            f"plot={self.plot_enabled}, csv={self.csv_enabled}"
+            f"plot={self.plot_enabled}, raw_velocity={self.plot_raw_velocity}, csv={self.csv_enabled}"
         )
 
     def _open_csv(self):
@@ -147,6 +166,7 @@ class JointFeedbackMonitor(Node):
                     "position_reference_rad",
                     "position_error_rad",
                     "velocity_feedback_rad_s",
+                    "velocity_feedback_raw_rad_s",
                     "velocity_reference_rad_s",
                     "velocity_error_rad_s",
                     "torque_feedback_nm",
@@ -187,6 +207,16 @@ class JointFeedbackMonitor(Node):
                 self.lines[(kind, row, "feedback")] = feedback_line
                 self.lines[(kind, row, "reference")] = reference_line
                 self.lines[(kind, row, "error")] = error_line
+                if kind == "velocity":
+                    raw_line, = ax.plot(
+                        [],
+                        [],
+                        label="raw feedback",
+                        color="tab:purple",
+                        linestyle="--",
+                        alpha=0.75,
+                    )
+                    self.lines[(kind, row, "raw_feedback")] = raw_line
                 ax.grid(True)
                 ax.set_ylim(*ylim)
                 if row == 0:
@@ -200,6 +230,7 @@ class JointFeedbackMonitor(Node):
         self.axes[-1][1].set_xlabel("time [s]")
         self.axes[-1][2].set_xlabel("time [s]")
         self.axes[0][0].legend(loc="upper right")
+        self.axes[0][1].legend(loc="upper right")
         self.fig.canvas.manager.set_window_title("Arm joint feedback monitor")
         self.fig.tight_layout()
         self.fig.show()
@@ -270,6 +301,17 @@ class JointFeedbackMonitor(Node):
             self.latest["torque_reference"] = reference
             self.latest_torque_reference_time = self.get_clock().now()
 
+    def _on_raw_velocity(self, msg):
+        if len(msg.data) < len(self.joint_names):
+            return
+        raw_velocity = np.array(
+            [_finite_or_nan(value) for value in msg.data[: len(self.joint_names)]],
+            dtype=float,
+        )
+        with self.state_lock:
+            self.latest["velocity_feedback_raw"] = raw_velocity
+            self.latest_raw_velocity_time = self.get_clock().now()
+
     def _fresh_or_none(self, value, timestamp, now):
         if value is None or timestamp is None:
             return None
@@ -282,6 +324,7 @@ class JointFeedbackMonitor(Node):
         with self.state_lock:
             latest = {key: None if value is None else value.copy() for key, value in self.latest.items()}
             state_time = self.latest_state_time
+            raw_velocity_time = self.latest_raw_velocity_time
             reference_time = self.latest_reference_time
             torque_reference_time = self.latest_torque_reference_time
 
@@ -291,6 +334,9 @@ class JointFeedbackMonitor(Node):
 
         position_reference = self._fresh_or_none(latest["position_reference"], reference_time, now)
         velocity_feedback = self._fresh_or_none(latest["velocity_feedback"], state_time, now)
+        velocity_feedback_raw = self._fresh_or_none(
+            latest["velocity_feedback_raw"], raw_velocity_time, now
+        )
         velocity_reference = self._fresh_or_none(latest["velocity_reference"], reference_time, now)
         torque_feedback = self._fresh_or_none(latest["torque_feedback"], state_time, now)
         torque_reference = self._fresh_or_none(latest["torque_reference"], torque_reference_time, now)
@@ -298,6 +344,9 @@ class JointFeedbackMonitor(Node):
         zero = np.zeros(len(self.joint_names), dtype=float)
         position_reference = position_feedback.copy() if position_reference is None else position_reference
         velocity_feedback = zero.copy() if velocity_feedback is None else velocity_feedback
+        velocity_feedback_raw = (
+            velocity_feedback.copy() if velocity_feedback_raw is None else velocity_feedback_raw
+        )
         velocity_reference = velocity_feedback.copy() if velocity_reference is None else velocity_reference
         torque_feedback = zero.copy() if torque_feedback is None else torque_feedback
         torque_reference = zero.copy() if torque_reference is None else torque_reference
@@ -313,6 +362,7 @@ class JointFeedbackMonitor(Node):
             position_reference,
             position_error,
             velocity_feedback,
+            velocity_feedback_raw,
             velocity_reference,
             velocity_error,
             torque_feedback,
@@ -332,6 +382,7 @@ class JointFeedbackMonitor(Node):
         position_reference,
         position_error,
         velocity_feedback,
+        velocity_feedback_raw,
         velocity_reference,
         velocity_error,
         torque_feedback,
@@ -343,6 +394,7 @@ class JointFeedbackMonitor(Node):
             "position_reference": position_reference,
             "position_error": position_error,
             "velocity_feedback": velocity_feedback,
+            "velocity_feedback_raw": velocity_feedback_raw,
             "velocity_reference": velocity_reference,
             "velocity_error": velocity_error,
             "torque_feedback": torque_feedback,
@@ -368,6 +420,7 @@ class JointFeedbackMonitor(Node):
                         f"{position_reference[i]:.6f}",
                         f"{position_error[i]:.6f}",
                         f"{velocity_feedback[i]:.6f}",
+                        f"{velocity_feedback_raw[i]:.6f}",
                         f"{velocity_reference[i]:.6f}",
                         f"{velocity_error[i]:.6f}",
                         f"{torque_feedback[i]:.6f}",
@@ -380,10 +433,16 @@ class JointFeedbackMonitor(Node):
     def _stack_history(self, key):
         return np.vstack(self.history[key]) if self.history[key] else None
 
-    def _set_lines(self, kind, row, x, feedback, reference, error):
+    def _set_lines(self, kind, row, x, feedback, reference, error, raw_feedback=None):
         self.lines[(kind, row, "feedback")].set_data(x, feedback[:, row])
         self.lines[(kind, row, "reference")].set_data(x, reference[:, row])
         self.lines[(kind, row, "error")].set_data(x, error[:, row])
+        if kind == "velocity" and (kind, row, "raw_feedback") in self.lines:
+            raw_line = self.lines[(kind, row, "raw_feedback")]
+            if self.plot_raw_velocity and raw_feedback is not None:
+                raw_line.set_data(x, raw_feedback[:, row])
+            else:
+                raw_line.set_data([], [])
 
     def _update_axis_limits(self, ax, values, fallback):
         finite = values[np.isfinite(values)]
@@ -416,10 +475,13 @@ class JointFeedbackMonitor(Node):
                 feedback = data[f"{kind}_feedback"]
                 reference = data[f"{kind}_reference"]
                 error = data[f"{kind}_error"]
-                self._set_lines(kind, row, x, feedback, reference, error)
+                raw_feedback = data["velocity_feedback_raw"] if kind == "velocity" else None
+                self._set_lines(kind, row, x, feedback, reference, error, raw_feedback)
                 ax = self.axes[row][col]
                 ax.set_xlim(-self.plot_history_sec, 0.0)
                 values = np.concatenate([feedback[:, row], reference[:, row], error[:, row]])
+                if kind == "velocity" and self.plot_raw_velocity and raw_feedback is not None:
+                    values = np.concatenate([values, raw_feedback[:, row]])
                 self._update_axis_limits(ax, values, fallbacks[kind])
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()

@@ -502,6 +502,20 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
     initial_read_timeout_sec_ = std::stod(info_.hardware_parameters.at("initial_read_timeout_sec"));
   if (info_.hardware_parameters.count("feedback_stale_timeout_sec"))
     feedback_stale_timeout_sec_ = std::stod(info_.hardware_parameters.at("feedback_stale_timeout_sec"));
+  if (info_.hardware_parameters.count("feedback_velocity_low_pass_alpha"))
+  {
+    const auto values = split_list(info_.hardware_parameters.at("feedback_velocity_low_pass_alpha"));
+    if (!values.empty())
+    {
+      double fill_value = 1.0;
+      for (size_t i = 0; i < feedback_velocity_low_pass_alpha_.size(); ++i)
+      {
+        if (i < values.size())
+          fill_value = std::stod(values[i]);
+        feedback_velocity_low_pass_alpha_[i] = std::clamp(fill_value, 0.0, 1.0);
+      }
+    }
+  }
   if (info_.hardware_parameters.count("first_power_on"))
     first_power_on_ = string_to_bool(info_.hardware_parameters.at("first_power_on"));
   if (info_.hardware_parameters.count("aux_joint_min"))
@@ -563,7 +577,7 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
   }
 
   RCLCPP_INFO(get_logger(),
-              "Initialized MyArmSystem with %i joints, arm_cdc_port=%s, baud=%u, scale=%.1f, slowdown=%.1f, first_power_on=%s, stm32_control_mode=%u, stm32_zero_trigger=%s, command_frame=%s, dynamics_feedforward=%s, dynamics_mode=%s, arm_joint_offsets=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], dynamics_torque_scales=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
+              "Initialized MyArmSystem with %i joints, arm_cdc_port=%s, baud=%u, scale=%.1f, slowdown=%.1f, first_power_on=%s, stm32_control_mode=%u, stm32_zero_trigger=%s, command_frame=%s, dynamics_feedforward=%s, dynamics_mode=%s, arm_joint_offsets=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], feedback_velocity_alpha=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], dynamics_torque_scales=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
               static_cast<int>(info_.joints.size()), serial_port_path_.c_str(),
               baudrate_, pos_scale_, hw_slowdown_,
               first_power_on_ ? "true" : "false",
@@ -575,6 +589,9 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
                 (dynamics_mode_ == DynamicsMode::CORIOLIS ? "coriolis" : "gravity"),
               arm_joint_offsets_[0], arm_joint_offsets_[1], arm_joint_offsets_[2],
               arm_joint_offsets_[3], arm_joint_offsets_[4], arm_joint_offsets_[5],
+              feedback_velocity_low_pass_alpha_[0], feedback_velocity_low_pass_alpha_[1],
+              feedback_velocity_low_pass_alpha_[2], feedback_velocity_low_pass_alpha_[3],
+              feedback_velocity_low_pass_alpha_[4], feedback_velocity_low_pass_alpha_[5],
               dynamics_torque_scales_[0], dynamics_torque_scales_[1],
               dynamics_torque_scales_[2], dynamics_torque_scales_[3],
               dynamics_torque_scales_[4], dynamics_torque_scales_[5]);
@@ -840,13 +857,17 @@ hardware_interface::return_type MyArmHardware::read(
     for (const auto & packet : packets)
     {
       publish_stm32_sys_state(packet.sys_state);
+      std::array<double, 6> raw_velocities{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
       const size_t joints_to_decode = std::min(arm_joint_count(), kArmFeedbackJointCount);
       for (size_t j = 0; j < joints_to_decode; j++)
       {
+        raw_velocities[j] = static_cast<double>(packet.fb[j].vel);
         hw_states_[j] = static_cast<double>(packet.fb[j].pos);
-        hw_velocities_[j] = static_cast<double>(packet.fb[j].vel);
+        hw_velocities_[j] = filter_feedback_velocity(j, raw_velocities[j]);
         hw_efforts_[j] = static_cast<double>(packet.fb[j].tau);
       }
+      last_raw_feedback_velocities_ = raw_velocities;
+      publish_raw_feedback_velocities(raw_velocities);
 
       last_feedback_time_ = get_clock()->now();
       frame_received = true;
@@ -1138,6 +1159,32 @@ void MyArmHardware::sync_commands_to_states()
 size_t MyArmHardware::arm_joint_count() const
 {
   return std::min(info_.joints.size(), kArmFeedbackJointCount);
+}
+
+double MyArmHardware::filter_feedback_velocity(size_t joint_index, double raw_velocity) const
+{
+  if (joint_index >= feedback_velocity_low_pass_alpha_.size() ||
+      joint_index >= hw_velocities_.size())
+  {
+    return raw_velocity;
+  }
+
+  const double alpha = feedback_velocity_low_pass_alpha_[joint_index];
+  const double previous = hw_velocities_[joint_index];
+  if (!std::isfinite(previous) || alpha >= 1.0)
+    return raw_velocity;
+  if (alpha <= 0.0)
+    return previous;
+  return alpha * raw_velocity + (1.0 - alpha) * previous;
+}
+
+void MyArmHardware::publish_raw_feedback_velocities(const std::array<double, 6> & raw_velocities)
+{
+  if (!raw_feedback_velocity_pub_)
+    return;
+  std_msgs::msg::Float64MultiArray msg;
+  msg.data.assign(raw_velocities.begin(), raw_velocities.end());
+  raw_feedback_velocity_pub_->publish(msg);
 }
 
 bool MyArmHardware::has_aux_joint() const
@@ -1590,6 +1637,10 @@ void MyArmHardware::open_stm32_trace()
       for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
         stm32_trace_stream_ << ",fb_vel_j" << (i + 1);
       for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+        stm32_trace_stream_ << ",fb_vel_filtered_j" << (i + 1);
+      for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+        stm32_trace_stream_ << ",fb_vel_raw_j" << (i + 1);
+      for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
         stm32_trace_stream_ << ",fb_tau_j" << (i + 1);
       for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
         stm32_trace_stream_ << ",tau_ros_j" << (i + 1);
@@ -1679,6 +1730,13 @@ void MyArmHardware::trace_stm32_sample(
     const double value = i < hw_velocities_.size() && std::isfinite(hw_velocities_[i]) ? hw_velocities_[i] : 0.0;
     stm32_trace_stream_ << ',' << value;
   }
+  for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+  {
+    const double value = i < hw_velocities_.size() && std::isfinite(hw_velocities_[i]) ? hw_velocities_[i] : 0.0;
+    stm32_trace_stream_ << ',' << value;
+  }
+  for (double value : last_raw_feedback_velocities_)
+    stm32_trace_stream_ << ',' << value;
   for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
   {
     const double value = i < hw_efforts_.size() && std::isfinite(hw_efforts_[i]) ? hw_efforts_[i] : 0.0;
@@ -1948,13 +2006,17 @@ bool MyArmHardware::wait_for_stm32_feedback_and_sync(double timeout_sec)
     {
       publish_stm32_sys_state(packet.sys_state);
       const size_t joints = std::min(arm_joint_count(), kArmFeedbackJointCount);
+      std::array<double, 6> raw_velocities{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
       for (size_t i = 0; i < joints; ++i)
       {
+        raw_velocities[i] = static_cast<double>(packet.fb[i].vel);
         hw_states_[i] = static_cast<double>(packet.fb[i].pos);
         hw_commands_[i] = hw_states_[i];
-        hw_velocities_[i] = static_cast<double>(packet.fb[i].vel);
+        hw_velocities_[i] = filter_feedback_velocity(i, raw_velocities[i]);
         hw_efforts_[i] = static_cast<double>(packet.fb[i].tau);
       }
+      last_raw_feedback_velocities_ = raw_velocities;
+      publish_raw_feedback_velocities(raw_velocities);
       last_sent_commands_ = hw_commands_;
       last_feedback_time_ = get_clock()->now();
       RCLCPP_WARN(
@@ -1988,6 +2050,8 @@ void MyArmHardware::setup_homing_interface()
     kStm32ControlModeTopic, latched_qos);
   stm32_mit_gains_pub_ = homing_node_->create_publisher<std_msgs::msg::Float64MultiArray>(
     kStm32MitGainsCurrentTopic, latched_qos);
+  raw_feedback_velocity_pub_ = homing_node_->create_publisher<std_msgs::msg::Float64MultiArray>(
+    "/my_arm_system/raw_feedback_velocities_rad_s", rclcpp::QoS(10));
   stm32_mit_gains_sub_ = homing_node_->create_subscription<std_msgs::msg::Float64MultiArray>(
     kStm32MitGainsCommandTopic,
     rclcpp::QoS(10),
@@ -2085,6 +2149,7 @@ void MyArmHardware::teardown_homing_interface()
   stm32_sys_state_pub_.reset();
   stm32_control_mode_pub_.reset();
   stm32_mit_gains_pub_.reset();
+  raw_feedback_velocity_pub_.reset();
   dynamics_tau_pub_.reset();
   dynamics_tau_sub_.reset();
   stm32_mit_gains_sub_.reset();

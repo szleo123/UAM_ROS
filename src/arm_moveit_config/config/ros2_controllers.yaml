@@ -29,9 +29,8 @@ arm_controller:
       - velocity
     state_interfaces:
       - position
-      - velocity
     allow_nonzero_velocity_at_trajectory_end: false   # <- ensure stop
-    open_loop_control: false
+    open_loop_control: true
     constraints:
       stopped_velocity_tolerance: 0.01 # Defaults to 0.01
       goal_time: 1.0
