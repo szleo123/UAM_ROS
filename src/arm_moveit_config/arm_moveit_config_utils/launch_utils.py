@@ -141,7 +141,12 @@ def common_bringup_launch_arguments(
     default_start_gripper_controller="true",
     default_start_handeye="false",
     default_start_homing_button="true",
+    default_start_mit_gain_tuner="true",
     default_first_power_on="true",
+    default_start_dynamics_monitor="true",
+    default_dynamics_monitor_plot="true",
+    default_start_joint_feedback_monitor="true",
+    default_joint_feedback_monitor_plot="true",
 ):
     hardware_args = [
         DeclareLaunchArgument(
@@ -419,7 +424,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "start_dynamics_monitor",
-            default_value="true",
+            default_value=default_start_dynamics_monitor,
             description="Launch a Pinocchio torque preview node for fake or real hardware.",
         ),
         DeclareLaunchArgument(
@@ -434,7 +439,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "dynamics_monitor_plot",
-            default_value="true",
+            default_value=default_dynamics_monitor_plot,
             description="Show a live Matplotlib torque plot for the dynamics preview node.",
         ),
         DeclareLaunchArgument(
@@ -478,7 +483,7 @@ def common_bringup_launch_arguments(
     joint_feedback_monitor_args = [
         DeclareLaunchArgument(
             "start_joint_feedback_monitor",
-            default_value="true",
+            default_value=default_start_joint_feedback_monitor,
             description="Launch a Matplotlib joint feedback/reference monitor for fake or real hardware.",
         ),
         DeclareLaunchArgument(
@@ -493,7 +498,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "joint_feedback_monitor_plot",
-            default_value="true",
+            default_value=default_joint_feedback_monitor_plot,
             description="Show a live Matplotlib plot from the joint feedback monitor.",
         ),
         DeclareLaunchArgument(
@@ -576,7 +581,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "start_mit_gain_tuner",
-            default_value="true",
+            default_value=default_start_mit_gain_tuner,
             description="Launch the STM32 FULL MIT Kp/Kd tuning window.",
         ),
         DeclareLaunchArgument(
