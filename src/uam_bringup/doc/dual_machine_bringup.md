@@ -104,12 +104,19 @@ ros2 launch uam_bringup operator_tools.launch.py
 By default this starts:
 
 - RViz
+- homing/zeroing button
 - joint feedback/reference monitor
 - final trajectory command monitor
 
 The monitor windows run on the laptop, but they subscribe to topics published by
 the Jetson over ROS 2. This keeps plotting and operator visualization off the
 Jetson while leaving hardware execution on the Jetson.
+
+The homing button also runs on the laptop by default. It watches
+`/arm_homing/state`, `/arm_homing/status_text`, and `/arm_homing/stm32_sys_state`
+from the Jetson. When you click Confirm Drop Pose / Zero Joint 3, it calls the
+Jetson service `/arm_homing/confirm_drop_pose`; the Jetson hardware interface is
+still the only process that sends the STM32 zeroing packet.
 
 Optional dynamics preview plotting is available on a safe laptop-local topic:
 
@@ -131,6 +138,29 @@ ros2 launch uam_bringup operator_tools.launch.py \
 The MIT gain tuner publishes to `/my_arm_system/stm32_mit_gains_cmd`, which the
 Jetson hardware interface consumes in FULL MIT mode. Use it for deliberate bench
 tuning sessions, not as a default UAV operator display.
+
+## Joint-3 Zeroing From Laptop
+
+For split mode, keep the Jetson headless:
+
+```bash
+ros2 launch uam_bringup jetson.launch.py start_homing_button:=false
+```
+
+Then start laptop operator tools:
+
+```bash
+ros2 launch uam_bringup operator_tools.launch.py
+```
+
+The laptop homing window shows the Jetson homing state. When it reaches
+`WAITING_OPERATOR_DROP_POSE`, move the arm to the required drop pose if needed,
+then click Confirm Drop Pose / Zero Joint 3. The same action can be done from
+any terminal with:
+
+```bash
+ros2 service call /arm_homing/confirm_drop_pose std_srvs/srv/Trigger {}
+```
 
 ## Topics Across Wi-Fi
 

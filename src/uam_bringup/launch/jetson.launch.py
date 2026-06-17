@@ -273,7 +273,7 @@ def generate_launch_description():
             default_start_move_group="true",
             default_start_controllers="true",
             default_start_handeye="false",
-            default_start_homing_button="true",
+            default_start_homing_button="false",
             default_start_mit_gain_tuner="false",
             default_start_dynamics_monitor="true",
             default_dynamics_monitor_plot="false",

@@ -56,6 +56,9 @@ def _dynamics_preview_node(context, *args, **kwargs):
                 {
                     "joint_names": LaunchConfiguration("joint_names"),
                     "output_topic": LaunchConfiguration("dynamics_preview_output_topic"),
+                    "per_joint_topic_prefix": LaunchConfiguration(
+                        "dynamics_preview_per_joint_topic_prefix"
+                    ),
                     "rate_hz": LaunchConfiguration("dynamics_preview_rate_hz"),
                     "mode": LaunchConfiguration("dynamics_preview_mode"),
                     "torque_scale": LaunchConfiguration("dynamics_preview_torque_scale"),
@@ -72,6 +75,24 @@ def _dynamics_preview_node(context, *args, **kwargs):
 def generate_launch_description():
     default_rviz_config = PathJoinSubstitution(
         [FindPackageShare("arm_moveit_config"), "config", "moveit.rviz"]
+    )
+
+    homing_button = Node(
+        package="my_arm_hardware",
+        executable="homing_button.py",
+        name="operator_arm_homing_button",
+        output="screen",
+        parameters=[
+            {
+                "initial_pose_trajectory_topic": LaunchConfiguration(
+                    "homing_initial_pose_trajectory_topic"
+                ),
+                "initial_pose_joints": LaunchConfiguration("joint_names"),
+                "initial_pose_positions": LaunchConfiguration("homing_initial_pose_positions"),
+                "initial_pose_duration_s": LaunchConfiguration("homing_initial_pose_duration_s"),
+            }
+        ],
+        condition=IfCondition(LaunchConfiguration("start_homing_button")),
     )
 
     joint_feedback_monitor = Node(
@@ -198,18 +219,23 @@ def generate_launch_description():
                 description="Show the read-mostly joint feedback/reference plot on the laptop.",
             ),
             DeclareLaunchArgument(
+                "start_homing_button",
+                default_value="true",
+                description="Show the remote homing/zeroing GUI on the laptop.",
+            ),
+            DeclareLaunchArgument(
                 "start_trajectory_command_monitor",
                 default_value="true",
                 description="Show final arm trajectory commands on the laptop.",
             ),
             DeclareLaunchArgument(
                 "start_dynamics_preview",
-                default_value="true",
+                default_value="false",
                 description="Show a laptop-local dynamics preview plot on a non-command topic.",
             ),
             DeclareLaunchArgument(
                 "enable_write_tools",
-                default_value="true",
+                default_value="false",
                 description="Required guard for laptop tools that publish hardware-affecting commands.",
             ),
             DeclareLaunchArgument(
@@ -248,6 +274,21 @@ def generate_launch_description():
                 "trajectory_topic",
                 default_value="/arm_controller/joint_trajectory",
             ),
+            DeclareLaunchArgument(
+                "homing_initial_pose_trajectory_topic",
+                default_value="/arm_controller/joint_trajectory",
+                description="Trajectory topic used by the homing GUI Move Initial Pose button.",
+            ),
+            DeclareLaunchArgument(
+                "homing_initial_pose_positions",
+                default_value="0.0,0.0,0.0,0.0,0.0,0.0",
+                description="Comma-separated positions for the homing GUI Move Initial Pose button.",
+            ),
+            DeclareLaunchArgument(
+                "homing_initial_pose_duration_s",
+                default_value="8.0",
+                description="Duration for the homing GUI Move Initial Pose trajectory.",
+            ),
             DeclareLaunchArgument("plot_history_sec", default_value="15.0"),
             DeclareLaunchArgument("plot_rate_hz", default_value="10.0"),
             DeclareLaunchArgument("joint_feedback_monitor_rate_hz", default_value="50.0"),
@@ -275,6 +316,11 @@ def generate_launch_description():
                 "dynamics_preview_output_topic",
                 default_value="/operator_tools/dynamics_preview_torques_nm",
                 description="Safe laptop preview topic, not the Jetson hardware feedforward topic.",
+            ),
+            DeclareLaunchArgument(
+                "dynamics_preview_per_joint_topic_prefix",
+                default_value="/operator_tools/dynamics_preview",
+                description="Safe laptop preview prefix for per-joint torque diagnostics.",
             ),
             DeclareLaunchArgument("dynamics_preview_rate_hz", default_value="50.0"),
             DeclareLaunchArgument("dynamics_preview_mode", default_value="gravity"),
@@ -306,6 +352,7 @@ def generate_launch_description():
             DeclareLaunchArgument("manual_torque_publish_rate_hz", default_value="20.0"),
             DeclareLaunchArgument("manual_torque_live_update", default_value="false"),
             OpaqueFunction(function=_rviz_node),
+            homing_button,
             joint_feedback_monitor,
             trajectory_command_monitor,
             OpaqueFunction(function=_dynamics_preview_node),
