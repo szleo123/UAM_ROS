@@ -70,6 +70,8 @@ colcon build --symlink-install --parallel-workers 4 \
 The skipped packages are only for the Geomagic Touch/OpenHaptics side. Jetson
 still builds and runs the hardware interface, MoveIt, Servo, safety filter,
 trajectory gate, camera, and monitor infrastructure.
+Do not skip `arm_geomagic_teleop` on the Jetson; its Jetson-side safety filter,
+trajectory gate, and command monitors do not require OpenHaptics.
 
 Laptop/operator build:
 
@@ -90,6 +92,13 @@ colcon build --symlink-install --parallel-workers 4 \
 
 Use the native flags only for local Jetson builds. Plain `Release` is safer when
 you want portable binaries across machines.
+
+If you switch an existing build directory from Makefiles to Ninja and see
+symlink or generator errors, remove the stale build artifacts before rebuilding:
+
+```bash
+rm -rf build install log
+```
 
 ## Jetson Launch
 
