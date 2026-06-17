@@ -47,6 +47,50 @@ of relying on multicast discovery.
 
 Keep the machines time-synchronized. `chrony` is a good default on Ubuntu.
 
+## Build Commands
+
+Use the same source revision on both machines, but build different package sets.
+The Geomagic/OpenHaptics driver is only needed on the laptop; OpenHaptics does
+not support the Jetson ARM64 target.
+
+Install Ninja if you want faster local builds:
+
+```bash
+sudo apt install ninja-build
+```
+
+Jetson/UAV build:
+
+```bash
+colcon build --symlink-install --parallel-workers 4 \
+  --packages-skip omni_common omni_broadcaster omni_description \
+  --cmake-args -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+```
+
+The skipped packages are only for the Geomagic Touch/OpenHaptics side. Jetson
+still builds and runs the hardware interface, MoveIt, Servo, safety filter,
+trajectory gate, camera, and monitor infrastructure.
+
+Laptop/operator build:
+
+```bash
+colcon build --symlink-install --parallel-workers 4 \
+  --cmake-args -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+```
+
+For a Jetson-only binary build that will not be copied to another CPU, you can
+add native ARM CPU tuning:
+
+```bash
+colcon build --symlink-install --parallel-workers 4 \
+  --packages-skip omni_common omni_broadcaster omni_description \
+  --cmake-args -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -mcpu=native"
+```
+
+Use the native flags only for local Jetson builds. Plain `Release` is safer when
+you want portable binaries across machines.
+
 ## Jetson Launch
 
 Start the hardware-facing UAV stack on the Jetson:
