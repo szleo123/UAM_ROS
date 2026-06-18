@@ -157,7 +157,7 @@ ros2 launch uam_bringup operator_tools.launch.py
 By default this starts:
 
 - RViz
-- homing/zeroing button
+- homing/zeroing and emergency gripper-open button
 - joint feedback/reference monitor
 - final trajectory command monitor
 
@@ -170,6 +170,13 @@ The homing button also runs on the laptop by default. It watches
 from the Jetson. When you click Confirm Drop Pose / Zero Joint 3, it calls the
 Jetson service `/arm_homing/confirm_drop_pose`; the Jetson hardware interface is
 still the only process that sends the STM32 zeroing packet.
+
+The same window also includes Emergency Open Gripper. It requests cancellation
+of active `/gripper_controller/gripper_cmd` goals and then sends the configured
+open position, so it can release the gripper even if a MoveIt or Geomagic
+close command is waiting for a stalled goal to finish. The same button is
+available in `single_machine.launch.py` because it uses the shared
+`arm_moveit_config` bringup path.
 
 Optional dynamics preview plotting is available on a safe laptop-local topic:
 
@@ -223,6 +230,7 @@ Laptop to Jetson:
 - `/geomagic_touch/buttons`
 - `/arm_teleop/raw_twist_cmd`
 - `/gripper_controller/gripper_cmd` action requests
+- `/gripper_controller/gripper_cmd/_action/cancel_goal` for emergency gripper release
 - optional `/my_arm_system/stm32_mit_gains_cmd` when remote write tools are enabled
 - optional `/arm_dynamics/torques_nm` when remote manual torque tuning is enabled
 - optional RViz/MoveIt requests to Jetson `move_group`

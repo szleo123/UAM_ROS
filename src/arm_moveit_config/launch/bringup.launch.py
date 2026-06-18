@@ -129,6 +129,19 @@ def generate_launch_description():
         executable="homing_button.py",
         name="arm_homing_button",
         output="screen",
+        parameters=[
+            {
+                "enable_emergency_gripper_open": LaunchConfiguration(
+                    "enable_emergency_gripper_open"
+                ),
+                "gripper_action_name": LaunchConfiguration("emergency_gripper_action_name"),
+                "gripper_open_position": LaunchConfiguration("emergency_gripper_open_position"),
+                "gripper_max_effort": LaunchConfiguration("emergency_gripper_max_effort"),
+                "gripper_cancel_before_open": LaunchConfiguration(
+                    "emergency_gripper_cancel_before_open"
+                ),
+            }
+        ],
         condition=IfCondition(
             PythonExpression(
                 [

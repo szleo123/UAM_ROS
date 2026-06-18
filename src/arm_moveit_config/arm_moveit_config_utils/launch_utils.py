@@ -105,6 +105,11 @@ UI_ARGUMENT_NAMES = [
     "start_move_group",
     "start_controllers",
     "start_homing_button",
+    "enable_emergency_gripper_open",
+    "emergency_gripper_action_name",
+    "emergency_gripper_open_position",
+    "emergency_gripper_max_effort",
+    "emergency_gripper_cancel_before_open",
     "start_mit_gain_tuner",
     "mit_gain_tuner_kp_max",
     "mit_gain_tuner_kd_max",
@@ -578,6 +583,31 @@ def common_bringup_launch_arguments(
             "start_homing_button",
             default_value=default_start_homing_button,
             description="Launch the manual homing confirmation button window.",
+        ),
+        DeclareLaunchArgument(
+            "enable_emergency_gripper_open",
+            default_value="true",
+            description="Add the emergency cancel-and-open gripper button to the homing/operator UI.",
+        ),
+        DeclareLaunchArgument(
+            "emergency_gripper_action_name",
+            default_value="/gripper_controller/gripper_cmd",
+            description="Gripper action used by the emergency open button.",
+        ),
+        DeclareLaunchArgument(
+            "emergency_gripper_open_position",
+            default_value="0.0",
+            description="Open position sent by the emergency gripper button.",
+        ),
+        DeclareLaunchArgument(
+            "emergency_gripper_max_effort",
+            default_value="0.0",
+            description="Max effort sent by the emergency gripper button.",
+        ),
+        DeclareLaunchArgument(
+            "emergency_gripper_cancel_before_open",
+            default_value="true",
+            description="Cancel current gripper action goals before sending emergency open.",
         ),
         DeclareLaunchArgument(
             "start_mit_gain_tuner",
