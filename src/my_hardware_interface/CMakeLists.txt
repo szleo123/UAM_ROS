@@ -100,6 +100,7 @@ install(
     scripts/stm32_trace_visualizer.py
     scripts/mit_gain_tuner.py
     scripts/manual_torque_tuner.py
+    scripts/arm_emergency_stop.py
   DESTINATION lib/${PROJECT_NAME}
 )
 install(TARGETS my_arm_hardware

@@ -18,6 +18,7 @@ def _setup(context, *args, **kwargs):
     require_deadman = _as_bool(context, "require_deadman")
     dry_run = _as_bool(context, "dry_run")
     armed_on_start = _as_bool(context, "armed_on_start")
+    call_emergency_stop_on_block = _as_bool(context, "call_emergency_stop_on_block")
     start_safety_filter = _as_bool(context, "start_safety_filter")
     output_trajectory_topic = (
         "/arm_teleop/dry_run_joint_trajectory" if dry_run else "/arm_controller/joint_trajectory"
@@ -96,6 +97,8 @@ def _setup(context, *args, **kwargs):
                     "armed_on_start": armed_on_start,
                     "output_trajectory_topic": output_trajectory_topic,
                     "require_deadman": require_deadman,
+                    "call_emergency_stop_on_block": call_emergency_stop_on_block,
+                    "emergency_stop_service": LaunchConfiguration("emergency_stop_service"),
                 },
             ],
         ),
@@ -245,6 +248,16 @@ def generate_launch_description():
                 "start_servo",
                 default_value="true",
                 description="Call MoveIt Servo start/unpause services after launch.",
+            ),
+            DeclareLaunchArgument(
+                "call_emergency_stop_on_block",
+                default_value="true",
+                description="Call shared arm emergency stop when the teleop gate blocks active motion for safety reasons.",
+            ),
+            DeclareLaunchArgument(
+                "emergency_stop_service",
+                default_value="/arm_emergency_stop/trigger",
+                description="Shared arm emergency stop service called by the teleop deadman gate.",
             ),
             DeclareLaunchArgument(
                 "check_collisions",

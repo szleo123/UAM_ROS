@@ -90,6 +90,12 @@ def generate_launch_description():
                 "initial_pose_joints": LaunchConfiguration("joint_names"),
                 "initial_pose_positions": LaunchConfiguration("homing_initial_pose_positions"),
                 "initial_pose_duration_s": LaunchConfiguration("homing_initial_pose_duration_s"),
+                "enable_emergency_arm_stop": LaunchConfiguration(
+                    "enable_emergency_arm_stop"
+                ),
+                "arm_emergency_stop_service": LaunchConfiguration(
+                    "arm_emergency_stop_service"
+                ),
                 "enable_emergency_gripper_open": LaunchConfiguration(
                     "enable_emergency_gripper_open"
                 ),
@@ -297,6 +303,16 @@ def generate_launch_description():
                 "homing_initial_pose_duration_s",
                 default_value="8.0",
                 description="Duration for the homing GUI Move Initial Pose trajectory.",
+            ),
+            DeclareLaunchArgument(
+                "enable_emergency_arm_stop",
+                default_value="true",
+                description="Add the emergency arm stop button to the operator GUI.",
+            ),
+            DeclareLaunchArgument(
+                "arm_emergency_stop_service",
+                default_value="/arm_emergency_stop/trigger",
+                description="Jetson service called by the emergency arm stop button.",
             ),
             DeclareLaunchArgument(
                 "enable_emergency_gripper_open",

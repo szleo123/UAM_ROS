@@ -100,6 +100,10 @@ trajectory_deadman_gate:
     max_integrated_step_rad: 0.002
     integrated_command_duration_s: 0.1
     integrated_publish_rate_hz: 100.0
+    call_emergency_stop_on_block: true
+    emergency_stop_service: /arm_emergency_stop/trigger
+    emergency_stop_reasons: deadman_released,homing_not_ready,disarmed
+    emergency_stop_cooldown_s: 1.0
 
 trajectory_command_monitor:
   ros__parameters:

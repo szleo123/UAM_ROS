@@ -131,6 +131,8 @@ def generate_launch_description():
         output="screen",
         parameters=[
             {
+                "enable_emergency_arm_stop": "true",
+                "arm_emergency_stop_service": LaunchConfiguration("arm_emergency_stop_service"),
                 "enable_emergency_gripper_open": LaunchConfiguration(
                     "enable_emergency_gripper_open"
                 ),
@@ -155,6 +157,31 @@ def generate_launch_description():
                 ]
             )
         ),
+    )
+
+    arm_emergency_stop = Node(
+        package="my_arm_hardware",
+        executable="arm_emergency_stop.py",
+        name="arm_emergency_stop",
+        output="screen",
+        parameters=[
+            {
+                "service_name": LaunchConfiguration("arm_emergency_stop_service"),
+                "follow_joint_trajectory_action_name": "/arm_controller/follow_joint_trajectory",
+                "joint_trajectory_topic": "/arm_controller/joint_trajectory",
+                "joint_state_topic": "/joint_states",
+                "joint_names": "joint_1,joint_2,joint_3,joint_4,joint_5,joint_6",
+                "hold_duration_s": LaunchConfiguration("arm_emergency_stop_hold_duration_s"),
+                "joint_state_timeout_s": LaunchConfiguration(
+                    "arm_emergency_stop_joint_state_timeout_s"
+                ),
+                "cancel_before_hold": LaunchConfiguration(
+                    "arm_emergency_stop_cancel_before_hold"
+                ),
+                "publish_hold": LaunchConfiguration("arm_emergency_stop_publish_hold"),
+            }
+        ],
+        condition=IfCondition(LaunchConfiguration("start_arm_emergency_stop")),
     )
 
     mit_gain_tuner = Node(
@@ -260,6 +287,7 @@ def generate_launch_description():
             rviz_node,
             handeye_publisher,
             homing_button,
+            arm_emergency_stop,
             mit_gain_tuner,
             dynamics_monitor,
             manual_torque_tuner,

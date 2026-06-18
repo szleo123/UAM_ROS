@@ -35,6 +35,7 @@ def generate_launch_description():
             "dry_run": LaunchConfiguration("teleop_dry_run"),
             "require_homing": LaunchConfiguration("teleop_require_homing"),
             "armed_on_start": LaunchConfiguration("teleop_armed_on_start"),
+            "emergency_stop_service": LaunchConfiguration("arm_emergency_stop_service"),
             "start_geomagic_driver": LaunchConfiguration("start_geomagic_driver"),
             "start_trajectory_command_monitor": LaunchConfiguration(
                 "start_trajectory_command_monitor"

@@ -54,6 +54,8 @@ class HomingButtonNode(Node):
         )
         self.declare_parameter("initial_pose_positions", "0.0,0.0,0.0,0.0,0.0,0.0")
         self.declare_parameter("initial_pose_duration_s", 8.0)
+        self.declare_parameter("enable_emergency_arm_stop", True)
+        self.declare_parameter("arm_emergency_stop_service", "/arm_emergency_stop/trigger")
         self.declare_parameter("enable_emergency_gripper_open", True)
         self.declare_parameter("gripper_action_name", "/gripper_controller/gripper_cmd")
         self.declare_parameter("gripper_open_position", 0.0)
@@ -67,6 +69,10 @@ class HomingButtonNode(Node):
             self.get_parameter("initial_pose_positions").value
         )
         self.initial_pose_duration_s = float(self.get_parameter("initial_pose_duration_s").value)
+        self.enable_emergency_arm_stop = as_bool(
+            self.get_parameter("enable_emergency_arm_stop").value
+        )
+        self.arm_emergency_stop_service = self.get_parameter("arm_emergency_stop_service").value
         self.enable_emergency_gripper_open = as_bool(
             self.get_parameter("enable_emergency_gripper_open").value
         )
@@ -86,6 +92,11 @@ class HomingButtonNode(Node):
             self.initial_pose_positions = []
 
         self.drop_client = self.create_client(Trigger, "/arm_homing/confirm_drop_pose")
+        self.arm_stop_client = None
+        if self.enable_emergency_arm_stop:
+            self.arm_stop_client = self.create_client(
+                Trigger, self.arm_emergency_stop_service
+            )
         self.initial_pose_pub = self.create_publisher(
             JointTrajectory, self.initial_pose_topic, 10
         )
@@ -140,10 +151,33 @@ class HomingButtonNode(Node):
             and self.gripper_action_client.server_is_ready()
         )
 
+    def ready_for_emergency_arm_stop(self):
+        return (
+            self.enable_emergency_arm_stop
+            and self.arm_stop_client is not None
+            and self.arm_stop_client.service_is_ready()
+        )
+
     def confirm_drop_pose(self, done_cb):
         request = Trigger.Request()
         future = self.drop_client.call_async(request)
         future.add_done_callback(done_cb)
+        return future
+
+    def request_emergency_arm_stop(self, done_cb):
+        if not self.ready_for_emergency_arm_stop():
+            self.status = (
+                f"Arm emergency stop service {self.arm_emergency_stop_service} "
+                "is not available."
+            )
+            self.get_logger().warn(self.status)
+            return None
+
+        request = Trigger.Request()
+        future = self.arm_stop_client.call_async(request)
+        future.add_done_callback(done_cb)
+        self.status = "Arm emergency stop requested."
+        self.get_logger().warn(self.status)
         return future
 
     def publish_initial_pose(self):
@@ -275,7 +309,7 @@ class HomingButtonApp:
 
         self.root = tk.Tk()
         self.root.title("Arm Operator Controls")
-        self.root.geometry("460x405")
+        self.root.geometry("460x470")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         signal.signal(signal.SIGINT, self.request_shutdown)
@@ -285,6 +319,7 @@ class HomingButtonApp:
         self.stm32_state_var = tk.StringVar(value="STM32: waiting for feedback")
         self.initial_pose_button_var = tk.StringVar(value="Move Initial Pose")
         self.drop_button_var = tk.StringVar(value="Confirm Drop Pose / Zero Joint 3")
+        self.emergency_arm_button_var = tk.StringVar(value="Emergency Stop Arm")
         self.emergency_gripper_button_var = tk.StringVar(value="Emergency Open Gripper")
 
         frame = tk.Frame(self.root, padx=18, pady=16)
@@ -332,6 +367,18 @@ class HomingButtonApp:
         )
         self.drop_button.pack(fill=tk.X)
 
+        self.emergency_arm_button = tk.Button(
+            frame,
+            textvariable=self.emergency_arm_button_var,
+            height=2,
+            command=self.on_emergency_arm_stop_clicked,
+            bg="#8c1d18",
+            fg="white",
+            activebackground="#641410",
+            activeforeground="white",
+        )
+        self.emergency_arm_button.pack(fill=tk.X, pady=(12, 8))
+
         self.emergency_gripper_button = tk.Button(
             frame,
             textvariable=self.emergency_gripper_button_var,
@@ -342,7 +389,7 @@ class HomingButtonApp:
             activebackground="#8c1d18",
             activeforeground="white",
         )
-        self.emergency_gripper_button.pack(fill=tk.X, pady=(12, 0))
+        self.emergency_gripper_button.pack(fill=tk.X)
 
         self.after_id = self.root.after(50, self.tick)
 
@@ -370,6 +417,11 @@ class HomingButtonApp:
         self.drop_button.configure(
             state=tk.NORMAL
             if self.node.ready_for_drop_confirmation() and not self.pending_futures
+            else tk.DISABLED
+        )
+        self.emergency_arm_button.configure(
+            state=tk.NORMAL
+            if self.node.ready_for_emergency_arm_stop()
             else tk.DISABLED
         )
         self.emergency_gripper_button.configure(
@@ -412,6 +464,22 @@ class HomingButtonApp:
         self.drop_button_var.set("Sending...")
         future = self.node.confirm_drop_pose(self.on_confirm_done)
         self.pending_futures.add(future)
+
+    def on_emergency_arm_stop_clicked(self):
+        if self.closed or self.shutdown_requested:
+            return
+        self.emergency_arm_button_var.set("Stopping Arm...")
+        future = self.node.request_emergency_arm_stop(self.on_emergency_arm_stop_done)
+        if future is not None:
+            self.pending_futures.add(future)
+
+    def on_emergency_arm_stop_done(self, future):
+        self.on_service_done(
+            future,
+            self.emergency_arm_button_var,
+            "Emergency Stop Arm",
+            self.node.arm_emergency_stop_service,
+        )
 
     def on_emergency_gripper_open_clicked(self):
         if self.closed or self.shutdown_requested:

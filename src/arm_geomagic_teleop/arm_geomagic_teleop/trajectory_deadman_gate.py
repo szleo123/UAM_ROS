@@ -11,7 +11,7 @@ from rclpy.node import Node
 from rclpy._rclpy_pybind11 import RCLError
 from sensor_msgs.msg import JointState, Joy
 from std_msgs.msg import String, UInt8
-from std_srvs.srv import SetBool
+from std_srvs.srv import SetBool, Trigger
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 
@@ -59,6 +59,13 @@ class TrajectoryDeadmanGate(Node):
         self.declare_parameter("max_integrated_step_rad", 0.03)
         self.declare_parameter("integrated_command_duration_s", 0.05)
         self.declare_parameter("integrated_publish_rate_hz", 10.0)
+        self.declare_parameter("call_emergency_stop_on_block", True)
+        self.declare_parameter("emergency_stop_service", "/arm_emergency_stop/trigger")
+        self.declare_parameter(
+            "emergency_stop_reasons",
+            "deadman_released,homing_not_ready,disarmed",
+        )
+        self.declare_parameter("emergency_stop_cooldown_s", 1.0)
 
         self.input_trajectory_topic = self.get_parameter("input_trajectory_topic").value
         self.output_trajectory_topic = self.get_parameter("output_trajectory_topic").value
@@ -89,6 +96,16 @@ class TrajectoryDeadmanGate(Node):
         self.integrated_publish_period_s = 1.0 / max(
             float(self.get_parameter("integrated_publish_rate_hz").value), 1.0
         )
+        self.call_emergency_stop_on_block = as_bool(
+            self.get_parameter("call_emergency_stop_on_block").value
+        )
+        self.emergency_stop_service = self.get_parameter("emergency_stop_service").value
+        self.emergency_stop_reasons = set(
+            self._parse_string_list(self.get_parameter("emergency_stop_reasons").value)
+        )
+        self.emergency_stop_cooldown_s = float(
+            self.get_parameter("emergency_stop_cooldown_s").value
+        )
 
         self.buttons: List[int] = []
         self.latest_button_time = self.get_clock().now()
@@ -103,6 +120,8 @@ class TrajectoryDeadmanGate(Node):
         self.forwarded_count = 0
         self.blocked_count = 0
         self.hold_count = 0
+        self.emergency_stop_count = 0
+        self.last_emergency_stop_time = self.get_clock().now() - Duration(seconds=10.0)
         self.last_reason = "startup_disarmed"
 
         self.trajectory_pub = self.create_publisher(JointTrajectory, self.output_trajectory_topic, 10)
@@ -113,13 +132,21 @@ class TrajectoryDeadmanGate(Node):
         self.create_subscription(JointState, self.joint_state_topic, self.joint_state_callback, 20)
         self.create_subscription(UInt8, self.homing_state_topic, self.homing_callback, 10)
         self.create_service(SetBool, "~/set_armed", self.set_armed_callback)
+        self.emergency_stop_client = self.create_client(Trigger, self.emergency_stop_service)
         self.create_timer(0.5, self.publish_status)
 
         self.get_logger().warn(
             f"Trajectory gate active: armed={self.armed}, homing_required={self.require_homing}, "
             f"input={self.input_trajectory_topic}, output={self.output_trajectory_topic}, "
-            f"integrate_servo_deltas={self.integrate_servo_deltas}"
+            f"integrate_servo_deltas={self.integrate_servo_deltas}, "
+            f"emergency_stop_on_block={self.call_emergency_stop_on_block}"
         )
+
+    @staticmethod
+    def _parse_string_list(value):
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return [str(item) for item in value]
 
     def buttons_callback(self, msg: Joy) -> None:
         self.buttons = [1 if value else 0 for value in msg.buttons]
@@ -209,8 +236,7 @@ class TrajectoryDeadmanGate(Node):
         else:
             self.blocked_count += 1
             if self.forwarding_active:
-                self.publish_hold()
-                self.forwarding_active = False
+                self.block_active_forwarding(reason)
             self.integrated_positions = {}
 
     def integrate_trajectory(self, msg: JointTrajectory) -> Optional[JointTrajectory]:
@@ -261,9 +287,13 @@ class TrajectoryDeadmanGate(Node):
         is_allowed, reason = self.allowed()
         self.last_reason = reason
         if self.forwarding_active and not is_allowed:
-            self.publish_hold()
-            self.forwarding_active = False
+            self.block_active_forwarding(reason)
             self.integrated_positions = {}
+
+    def block_active_forwarding(self, reason: str) -> None:
+        self.publish_hold()
+        self.request_emergency_stop(reason)
+        self.forwarding_active = False
 
     def publish_hold(self) -> None:
         if not self.publish_hold_on_block:
@@ -284,11 +314,41 @@ class TrajectoryDeadmanGate(Node):
         self.integrated_positions = {}
         self.get_logger().warn("Published hold trajectory after teleop gate blocked motion.")
 
+    def request_emergency_stop(self, reason: str) -> None:
+        if not self.call_emergency_stop_on_block:
+            return
+        if reason not in self.emergency_stop_reasons:
+            return
+        now = self.get_clock().now()
+        if now - self.last_emergency_stop_time < Duration(seconds=self.emergency_stop_cooldown_s):
+            return
+        self.last_emergency_stop_time = now
+
+        if not self.emergency_stop_client.service_is_ready():
+            self.get_logger().warn(
+                f"Emergency stop service is not available: {self.emergency_stop_service}"
+            )
+            return
+
+        future = self.emergency_stop_client.call_async(Trigger.Request())
+        future.add_done_callback(self.emergency_stop_done_callback)
+        self.emergency_stop_count += 1
+        self.get_logger().warn(
+            f"Requested shared arm emergency stop because trajectory gate blocked: {reason}"
+        )
+
+    def emergency_stop_done_callback(self, future) -> None:
+        try:
+            response = future.result()
+            if not response.success:
+                self.get_logger().warn(f"Emergency stop service reported: {response.message}")
+        except Exception as exc:
+            self.get_logger().warn(f"Emergency stop service call failed: {exc}")
+
     def set_armed_callback(self, request: SetBool.Request, response: SetBool.Response) -> SetBool.Response:
         self.armed = bool(request.data)
         if not self.armed and self.forwarding_active:
-            self.publish_hold()
-            self.forwarding_active = False
+            self.block_active_forwarding("disarmed")
         if not self.armed:
             self.integrated_positions = {}
         response.success = True
@@ -302,7 +362,8 @@ class TrajectoryDeadmanGate(Node):
             f"armed={int(self.armed)}; homed={int(self.homing_ready())}; "
             f"homing_state={self.homing_state}; deadman={int(self.deadman_active())}; "
             f"command={int(self.command_active())}; reason={self.last_reason}; "
-            f"forwarded={self.forwarded_count}; blocked={self.blocked_count}; holds={self.hold_count}"
+            f"forwarded={self.forwarded_count}; blocked={self.blocked_count}; "
+            f"holds={self.hold_count}; emergency_stops={self.emergency_stop_count}"
         )
         self.status_pub.publish(msg)
 
