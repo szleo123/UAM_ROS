@@ -4,7 +4,10 @@ import signal
 import tkinter as tk
 from tkinter import messagebox
 
+from action_msgs.srv import CancelGoal
+from control_msgs.action import GripperCommand
 import rclpy
+from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -32,6 +35,12 @@ STM32_STATE_COLORS = {
 }
 
 
+def as_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
 class HomingButtonNode(Node):
     def __init__(self):
         super().__init__("arm_homing_button")
@@ -45,6 +54,11 @@ class HomingButtonNode(Node):
         )
         self.declare_parameter("initial_pose_positions", "0.0,0.0,0.0,0.0,0.0,0.0")
         self.declare_parameter("initial_pose_duration_s", 8.0)
+        self.declare_parameter("enable_emergency_gripper_open", True)
+        self.declare_parameter("gripper_action_name", "/gripper_controller/gripper_cmd")
+        self.declare_parameter("gripper_open_position", 0.0)
+        self.declare_parameter("gripper_max_effort", 0.0)
+        self.declare_parameter("gripper_cancel_before_open", True)
         self.initial_pose_topic = self.get_parameter("initial_pose_trajectory_topic").value
         self.initial_pose_joints = self._parse_string_list(
             self.get_parameter("initial_pose_joints").value
@@ -53,6 +67,15 @@ class HomingButtonNode(Node):
             self.get_parameter("initial_pose_positions").value
         )
         self.initial_pose_duration_s = float(self.get_parameter("initial_pose_duration_s").value)
+        self.enable_emergency_gripper_open = as_bool(
+            self.get_parameter("enable_emergency_gripper_open").value
+        )
+        self.gripper_action_name = self.get_parameter("gripper_action_name").value
+        self.gripper_open_position = float(self.get_parameter("gripper_open_position").value)
+        self.gripper_max_effort = float(self.get_parameter("gripper_max_effort").value)
+        self.gripper_cancel_before_open = as_bool(
+            self.get_parameter("gripper_cancel_before_open").value
+        )
         if len(self.initial_pose_positions) != len(self.initial_pose_joints):
             self.get_logger().error(
                 "initial_pose_positions has %d values but initial_pose_joints has %d; "
@@ -66,6 +89,15 @@ class HomingButtonNode(Node):
         self.initial_pose_pub = self.create_publisher(
             JointTrajectory, self.initial_pose_topic, 10
         )
+        self.gripper_action_client = None
+        self.gripper_cancel_client = None
+        if self.enable_emergency_gripper_open:
+            self.gripper_action_client = ActionClient(
+                self, GripperCommand, self.gripper_action_name
+            )
+            self.gripper_cancel_client = self.create_client(
+                CancelGoal, self._action_cancel_service_name(self.gripper_action_name)
+            )
         latched_qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -78,6 +110,10 @@ class HomingButtonNode(Node):
         self.create_subscription(
             UInt8, "/arm_homing/stm32_sys_state", self._on_stm32_state, latched_qos
         )
+
+    @staticmethod
+    def _action_cancel_service_name(action_name):
+        return f"{action_name.rstrip('/')}/_action/cancel_goal"
 
     def _on_status(self, msg):
         self.status = msg.data
@@ -95,6 +131,13 @@ class HomingButtonNode(Node):
         return (
             self.state in (WAITING_OPERATOR_DROP_POSE, ALL_READY)
             and len(self.initial_pose_positions) == len(self.initial_pose_joints)
+        )
+
+    def ready_for_emergency_gripper_open(self):
+        return (
+            self.enable_emergency_gripper_open
+            and self.gripper_action_client is not None
+            and self.gripper_action_client.server_is_ready()
         )
 
     def confirm_drop_pose(self, done_cb):
@@ -121,6 +164,94 @@ class HomingButtonNode(Node):
         )
         self.get_logger().warn(self.status)
 
+    def request_emergency_gripper_open(self):
+        if not self.enable_emergency_gripper_open:
+            self.status = "Emergency gripper open is disabled."
+            return
+        if self.gripper_action_client is None or not self.gripper_action_client.server_is_ready():
+            self.status = (
+                f"Gripper action server {self.gripper_action_name} is not available."
+            )
+            self.get_logger().warn(self.status)
+            return
+
+        self.status = "Emergency gripper open requested."
+        self.get_logger().warn(self.status)
+
+        if (
+            self.gripper_cancel_before_open
+            and self.gripper_cancel_client is not None
+            and self.gripper_cancel_client.service_is_ready()
+        ):
+            request = CancelGoal.Request()
+            future = self.gripper_cancel_client.call_async(request)
+            future.add_done_callback(self._on_emergency_cancel_done)
+            return
+
+        if self.gripper_cancel_before_open:
+            self.get_logger().warn(
+                "Gripper cancel service is not available; sending open goal directly."
+            )
+        self._send_emergency_gripper_open_goal()
+
+    def _on_emergency_cancel_done(self, future):
+        try:
+            response = future.result()
+            self.get_logger().warn(
+                "Emergency gripper cancel requested; return_code=%d, goals_canceling=%d",
+                response.return_code,
+                len(response.goals_canceling),
+            )
+        except Exception as exc:
+            self.get_logger().warn(f"Emergency gripper cancel request failed: {exc}")
+
+        self._send_emergency_gripper_open_goal()
+
+    def _send_emergency_gripper_open_goal(self):
+        if self.gripper_action_client is None or not self.gripper_action_client.server_is_ready():
+            self.status = (
+                f"Gripper action server {self.gripper_action_name} disappeared before open goal."
+            )
+            self.get_logger().warn(self.status)
+            return
+
+        goal = GripperCommand.Goal()
+        goal.command.position = self.gripper_open_position
+        goal.command.max_effort = self.gripper_max_effort
+        future = self.gripper_action_client.send_goal_async(goal)
+        future.add_done_callback(self._on_emergency_open_goal_response)
+        self.status = (
+            f"Emergency gripper open goal sent to {self.gripper_action_name} "
+            f"at position {self.gripper_open_position:.3f}."
+        )
+        self.get_logger().warn(self.status)
+
+    def _on_emergency_open_goal_response(self, future):
+        try:
+            goal_handle = future.result()
+        except Exception as exc:
+            self.status = f"Emergency gripper open goal failed: {exc}"
+            self.get_logger().warn(self.status)
+            return
+
+        if not goal_handle.accepted:
+            self.status = "Emergency gripper open goal was rejected."
+            self.get_logger().warn(self.status)
+            return
+
+        self.status = "Emergency gripper open goal accepted."
+        self.get_logger().warn(self.status)
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self._on_emergency_open_result)
+
+    def _on_emergency_open_result(self, future):
+        try:
+            result = future.result()
+            self.status = f"Emergency gripper open finished with status {result.status}."
+        except Exception as exc:
+            self.status = f"Emergency gripper open result failed: {exc}"
+        self.get_logger().warn(self.status)
+
     @staticmethod
     def _parse_string_list(value):
         if isinstance(value, str):
@@ -143,8 +274,8 @@ class HomingButtonApp:
         self.pending_futures = set()
 
         self.root = tk.Tk()
-        self.root.title("Arm Homing")
-        self.root.geometry("460x330")
+        self.root.title("Arm Operator Controls")
+        self.root.geometry("460x405")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         signal.signal(signal.SIGINT, self.request_shutdown)
@@ -154,11 +285,12 @@ class HomingButtonApp:
         self.stm32_state_var = tk.StringVar(value="STM32: waiting for feedback")
         self.initial_pose_button_var = tk.StringVar(value="Move Initial Pose")
         self.drop_button_var = tk.StringVar(value="Confirm Drop Pose / Zero Joint 3")
+        self.emergency_gripper_button_var = tk.StringVar(value="Emergency Open Gripper")
 
         frame = tk.Frame(self.root, padx=18, pady=16)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        title = tk.Label(frame, text="STM32 arm startup", font=("Sans", 15, "bold"))
+        title = tk.Label(frame, text="Arm operator controls", font=("Sans", 15, "bold"))
         title.pack(anchor="w")
 
         status = tk.Label(
@@ -200,6 +332,18 @@ class HomingButtonApp:
         )
         self.drop_button.pack(fill=tk.X)
 
+        self.emergency_gripper_button = tk.Button(
+            frame,
+            textvariable=self.emergency_gripper_button_var,
+            height=2,
+            command=self.on_emergency_gripper_open_clicked,
+            bg="#b3261e",
+            fg="white",
+            activebackground="#8c1d18",
+            activeforeground="white",
+        )
+        self.emergency_gripper_button.pack(fill=tk.X, pady=(12, 0))
+
         self.after_id = self.root.after(50, self.tick)
 
     def request_shutdown(self, *_):
@@ -226,6 +370,11 @@ class HomingButtonApp:
         self.drop_button.configure(
             state=tk.NORMAL
             if self.node.ready_for_drop_confirmation() and not self.pending_futures
+            else tk.DISABLED
+        )
+        self.emergency_gripper_button.configure(
+            state=tk.NORMAL
+            if self.node.ready_for_emergency_gripper_open()
             else tk.DISABLED
         )
         self.after_id = self.root.after(50, self.tick)
@@ -263,6 +412,16 @@ class HomingButtonApp:
         self.drop_button_var.set("Sending...")
         future = self.node.confirm_drop_pose(self.on_confirm_done)
         self.pending_futures.add(future)
+
+    def on_emergency_gripper_open_clicked(self):
+        if self.closed or self.shutdown_requested:
+            return
+        self.emergency_gripper_button_var.set("Opening Gripper...")
+        self.node.request_emergency_gripper_open()
+        self.root.after(
+            1500,
+            lambda: self.emergency_gripper_button_var.set("Emergency Open Gripper"),
+        )
 
     def on_confirm_done(self, future):
         self.on_service_done(

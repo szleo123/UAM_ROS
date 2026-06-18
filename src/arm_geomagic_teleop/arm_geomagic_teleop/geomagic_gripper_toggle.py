@@ -41,6 +41,7 @@ class GeomagicGripperToggle(Node):
         self.declare_parameter("start_closed", False)
         self.declare_parameter("debounce_s", 0.35)
         self.declare_parameter("wait_for_server_s", 0.0)
+        self.declare_parameter("allow_interrupt", True)
 
         self.input_buttons_topic = self.get_parameter("input_buttons_topic").value
         self.status_topic = self.get_parameter("status_topic").value
@@ -56,11 +57,15 @@ class GeomagicGripperToggle(Node):
         )
         self.debounce_s = float(self.get_parameter("debounce_s").value)
         self.wait_for_server_s = float(self.get_parameter("wait_for_server_s").value)
+        self.allow_interrupt = as_bool(self.get_parameter("allow_interrupt").value)
 
         self.buttons: List[int] = []
         self.previous_button = False
         self.last_toggle_time = self.get_clock().now() - Duration(seconds=10.0)
         self.goal_in_flight = False
+        self.active_goal_handle = None
+        self.goal_counter = 0
+        self.active_goal_id = 0
 
         self.action_client = ActionClient(self, GripperCommand, self.gripper_action_name)
         self.status_pub = self.create_publisher(String, self.status_topic, 10)
@@ -69,7 +74,8 @@ class GeomagicGripperToggle(Node):
         self.get_logger().warn(
             "Geomagic gripper toggle ready: "
             f"button={self.toggle_button_index}, action={self.gripper_action_name}, "
-            f"open={self.open_position:.3f}, close={self.closed_position:.3f}"
+            f"open={self.open_position:.3f}, close={self.closed_position:.3f}, "
+            f"allow_interrupt={self.allow_interrupt}"
         )
 
     def buttons_callback(self, msg: Joy) -> None:
@@ -90,9 +96,13 @@ class GeomagicGripperToggle(Node):
             self.publish_status("debounced")
             return
         if self.goal_in_flight:
-            self.publish_status("busy")
-            return
+            if not self.allow_interrupt:
+                self.publish_status("busy")
+                return
+            self.publish_status(f"interrupting_{self.state.value}")
+            self.cancel_active_goal()
 
+        previous_state = self.state
         next_state = GripperState.CLOSED if self.state == GripperState.OPEN else GripperState.OPEN
         target = self.closed_position if next_state == GripperState.CLOSED else self.open_position
 
@@ -107,34 +117,119 @@ class GeomagicGripperToggle(Node):
         goal.command.position = target
         goal.command.max_effort = self.max_effort
 
+        self.goal_counter += 1
+        goal_id = self.goal_counter
+        self.active_goal_id = goal_id
+        self.active_goal_handle = None
         self.goal_in_flight = True
+        self.state = next_state
         self.last_toggle_time = now
         self.publish_status(f"sending_{next_state.value}")
         future = self.action_client.send_goal_async(goal)
-        future.add_done_callback(lambda done_future: self.goal_response_callback(done_future, next_state))
+        future.add_done_callback(
+            lambda done_future: self.goal_response_callback(
+                done_future, goal_id, next_state, previous_state
+            )
+        )
 
-    def goal_response_callback(self, future, next_state: GripperState) -> None:
-        goal_handle = future.result()
+    def cancel_active_goal(self) -> None:
+        goal_handle = self.active_goal_handle
+        goal_id = self.active_goal_id
+        if goal_handle is None:
+            self.publish_status("interrupt_pending_goal_response")
+            return
+
+        try:
+            cancel_future = goal_handle.cancel_goal_async()
+        except Exception as exc:  # noqa: BLE001 - ROS action futures can raise middleware errors.
+            self.get_logger().warn(f"Failed to request gripper goal cancel: {exc}")
+            self.publish_status("cancel_request_failed")
+            return
+
+        cancel_future.add_done_callback(
+            lambda done_future: self.cancel_response_callback(done_future, goal_id)
+        )
+        self.publish_status("cancel_requested")
+
+    def goal_response_callback(
+        self,
+        future,
+        goal_id: int,
+        next_state: GripperState,
+        previous_state: GripperState,
+    ) -> None:
+        try:
+            goal_handle = future.result()
+        except Exception as exc:  # noqa: BLE001 - ROS action futures can raise middleware errors.
+            if goal_id == self.active_goal_id:
+                self.goal_in_flight = False
+                self.active_goal_handle = None
+                self.state = previous_state
+            self.get_logger().warn(f"Gripper goal send failed: {exc}")
+            self.publish_status("send_failed")
+            return
+
+        if goal_id != self.active_goal_id:
+            if goal_handle.accepted:
+                try:
+                    goal_handle.cancel_goal_async()
+                except Exception as exc:  # noqa: BLE001
+                    self.get_logger().warn(f"Failed to cancel stale gripper goal: {exc}")
+            self.publish_status("stale_goal_response")
+            return
+
         if not goal_handle.accepted:
             self.goal_in_flight = False
+            self.active_goal_handle = None
+            self.state = previous_state
             self.get_logger().warn("Gripper goal rejected.")
             self.publish_status("rejected")
             return
 
-        self.state = next_state
+        self.active_goal_handle = goal_handle
         self.publish_status(f"accepted_{self.state.value}")
         result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self.result_callback)
+        result_future.add_done_callback(
+            lambda done_future: self.result_callback(done_future, goal_id, next_state)
+        )
 
-    def result_callback(self, future) -> None:
+    def cancel_response_callback(self, future, goal_id: int) -> None:
+        try:
+            future.result()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f"Gripper cancel response failed: {exc}")
+            if goal_id == self.active_goal_id:
+                self.publish_status("cancel_failed")
+            return
+
+        if goal_id == self.active_goal_id:
+            self.publish_status("cancel_accepted")
+
+    def result_callback(self, future, goal_id: int, next_state: GripperState) -> None:
+        try:
+            result = future.result()
+        except Exception as exc:  # noqa: BLE001 - keep node alive on action errors.
+            if goal_id == self.active_goal_id:
+                self.goal_in_flight = False
+                self.active_goal_handle = None
+            self.get_logger().warn(f"Gripper result failed: {exc}")
+            self.publish_status("result_failed")
+            return
+
+        if goal_id != self.active_goal_id:
+            self.publish_status("stale_result")
+            return
+
         self.goal_in_flight = False
-        result = future.result()
+        self.active_goal_handle = None
+        self.state = next_state
         self.publish_status(f"done_{self.state.value}_status_{result.status}")
 
     def publish_status(self, state: str) -> None:
         msg = String()
         msg.data = (
             f"state={state}; gripper={self.state.value}; "
+            f"in_flight={self.goal_in_flight}; goal_id={self.active_goal_id}; "
             f"button_index={self.toggle_button_index}; action={self.gripper_action_name}"
         )
         self.status_pub.publish(msg)

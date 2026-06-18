@@ -90,6 +90,15 @@ def generate_launch_description():
                 "initial_pose_joints": LaunchConfiguration("joint_names"),
                 "initial_pose_positions": LaunchConfiguration("homing_initial_pose_positions"),
                 "initial_pose_duration_s": LaunchConfiguration("homing_initial_pose_duration_s"),
+                "enable_emergency_gripper_open": LaunchConfiguration(
+                    "enable_emergency_gripper_open"
+                ),
+                "gripper_action_name": LaunchConfiguration("emergency_gripper_action_name"),
+                "gripper_open_position": LaunchConfiguration("emergency_gripper_open_position"),
+                "gripper_max_effort": LaunchConfiguration("emergency_gripper_max_effort"),
+                "gripper_cancel_before_open": LaunchConfiguration(
+                    "emergency_gripper_cancel_before_open"
+                ),
             }
         ],
         condition=IfCondition(LaunchConfiguration("start_homing_button")),
@@ -288,6 +297,31 @@ def generate_launch_description():
                 "homing_initial_pose_duration_s",
                 default_value="8.0",
                 description="Duration for the homing GUI Move Initial Pose trajectory.",
+            ),
+            DeclareLaunchArgument(
+                "enable_emergency_gripper_open",
+                default_value="true",
+                description="Add the emergency cancel-and-open gripper button to the operator GUI.",
+            ),
+            DeclareLaunchArgument(
+                "emergency_gripper_action_name",
+                default_value="/gripper_controller/gripper_cmd",
+                description="Gripper action used by the emergency open button.",
+            ),
+            DeclareLaunchArgument(
+                "emergency_gripper_open_position",
+                default_value="0.0",
+                description="Open position sent by the emergency gripper button.",
+            ),
+            DeclareLaunchArgument(
+                "emergency_gripper_max_effort",
+                default_value="0.0",
+                description="Max effort sent by the emergency gripper button.",
+            ),
+            DeclareLaunchArgument(
+                "emergency_gripper_cancel_before_open",
+                default_value="true",
+                description="Cancel current gripper action goals before sending emergency open.",
             ),
             DeclareLaunchArgument("plot_history_sec", default_value="15.0"),
             DeclareLaunchArgument("plot_rate_hz", default_value="10.0"),
