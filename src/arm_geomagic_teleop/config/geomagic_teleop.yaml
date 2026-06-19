@@ -48,6 +48,39 @@ geomagic_cartesian_teleop:
     robot_angular_axes_from_device: ["-y", "x", "z"]
     zero_on_release: true
 
+keyboard_twist_teleop:
+  ros__parameters:
+    keyboard_backend: evdev
+    keyboard_device_path: ""
+    keyboard_device_name: ""
+    keyboard_grab_device: false
+    output_twist_topic: /arm_teleop/raw_twist_cmd
+    output_buttons_topic: /geomagic_touch/buttons
+    status_topic: /arm_teleop/keyboard_status
+    command_frame: uav_mount
+    angular_command_frame: tool0
+    publish_rate_hz: 100.0
+    linear_speed_m_s: 0.03
+    angular_speed_rad_s: 0.20
+    fast_scale: 2.0
+    slow_scale: 0.35
+    low_pass_alpha: 0.35
+    terminal_key_hold_s: 0.18
+    deadman_key: space
+    gripper_key: g
+    positive_x_key: w
+    negative_x_key: s
+    positive_y_key: a
+    negative_y_key: d
+    positive_z_key: z
+    negative_z_key: x
+    positive_tool_z_key: q
+    negative_tool_z_key: e
+    fast_key: leftshift
+    slow_key: leftctrl
+    quit_key: esc
+    gripper_pulse_s: 0.15
+
 teleop_safety_filter:
   ros__parameters:
     input_twist_topic: /arm_teleop/raw_twist_cmd

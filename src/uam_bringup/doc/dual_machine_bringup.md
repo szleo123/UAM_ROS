@@ -80,6 +80,16 @@ colcon build --symlink-install --parallel-workers 4 \
   --cmake-args -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 ```
 
+For keyboard fallback teleop with true key press/release handling, install
+`evdev` and allow the operator user to read keyboard input events:
+
+```bash
+sudo apt install python3-evdev
+sudo usermod -aG input $USER
+```
+
+Log out and back in after changing group membership.
+
 For a Jetson-only binary build that will not be copied to another CPU, you can
 add native ARM CPU tuning:
 
@@ -135,6 +145,68 @@ Start the operator-side Geomagic input stack on the laptop:
 
 ```bash
 ros2 launch uam_bringup laptop.launch.py
+```
+
+The laptop input backend is selectable. Geomagic remains the default:
+
+```bash
+ros2 launch uam_bringup laptop.launch.py input_device:=geomagic
+```
+
+If the Geomagic Touch is unavailable, start keyboard fallback input instead:
+
+```bash
+ros2 launch uam_bringup laptop.launch.py input_device:=keyboard
+```
+
+Keyboard fallback publishes the same teleop contract as the Geomagic adapter:
+`/arm_teleop/raw_twist_cmd` and `/geomagic_touch/buttons`. The Jetson-side
+safety filter, MoveIt Servo, trajectory deadman gate, homing checks, and
+emergency-stop behavior are unchanged.
+
+Default keyboard controls:
+
+- hold Space: deadman
+- W/S: positive/negative X command
+- A/D: positive/negative Y command
+- Z/X: positive/negative Z command
+- Q/E: rotate around the current `tool0` Z axis
+- G: gripper toggle pulse
+- Left Shift: fast scale
+- Left Ctrl: slow scale
+- Esc: quit and publish zero command
+
+Tune keyboard speeds and scaling from launch:
+
+```bash
+ros2 launch uam_bringup laptop.launch.py \
+  input_device:=keyboard \
+  keyboard_linear_speed_m_s:=0.03 \
+  keyboard_angular_speed_rad_s:=0.12 \
+  keyboard_fast_scale:=1.5 \
+  keyboard_slow_scale:=0.25
+```
+
+The preferred keyboard backend is `evdev`, because it sees real key-release
+events for the deadman key. If auto-selection picks the wrong input device, list
+devices with `ls /dev/input/event*` and pass the correct one:
+
+```bash
+ros2 launch uam_bringup laptop.launch.py \
+  input_device:=keyboard \
+  keyboard_device_path:=/dev/input/eventX
+```
+
+The keyboard device is not exclusively grabbed by default, so Ctrl-C and other
+desktop input still work. For a dedicated bench test you can request exclusive
+input with `keyboard_grab_device:=true`.
+
+A terminal fallback exists for quick tests, but it cannot see true key release:
+
+```bash
+ros2 launch uam_bringup laptop.launch.py \
+  input_device:=keyboard \
+  keyboard_backend:=terminal
 ```
 
 Start the same stack with RViz:
@@ -229,7 +301,7 @@ ros2 service call /arm_homing/confirm_drop_pose std_srvs/srv/Trigger {}
 Laptop to Jetson:
 
 - `/geomagic_touch/pose`
-- `/geomagic_touch/buttons`
+- `/geomagic_touch/buttons` from Geomagic or keyboard fallback
 - `/arm_teleop/raw_twist_cmd`
 - `/arm_emergency_stop/trigger` for emergency arm stop
 - `/gripper_controller/gripper_cmd` action requests
