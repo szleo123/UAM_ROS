@@ -67,6 +67,9 @@ constexpr uint8_t kStm32ModeSafeLock = 0xFF;
 constexpr double kMinPeriodSec = 1e-6;
 constexpr double kGripperUnitsMin = 60.0;
 constexpr double kGripperUnitsMax = 1390.0;
+constexpr size_t kGripperMinStateFrameLength = 11;
+constexpr size_t kGripperMaxFrameLength = 64;
+constexpr size_t kGripperMaxRxBufferLength = 256;
 constexpr const char * kHomingStatusTopic = "/arm_homing/status_text";
 constexpr const char * kHomingStateTopic = "/arm_homing/state";
 constexpr const char * kStm32SysStateTopic = "/arm_homing/stm32_sys_state";
@@ -287,23 +290,30 @@ static inline std::vector<uint8_t> gripper_pack_target(uint8_t id, uint16_t targ
    We check header, length, checksum, and read current position from payload.
    Adjust the offsets if your device's state frame differs. */
 static inline bool gripper_try_parse_state(std::vector<uint8_t>& buf, int16_t& current_units) {
-  // seek header
   size_t i = 0;
-  while (buf.size() - i >= 9) {
-    if (buf[i] == 0xAA && buf[i+1] == 0x55)
+  while (i + 3 < buf.size()) {
+    if (buf[i] == 0xAA && buf[i + 1] == 0x55)
     {
-      if (buf.size() - i < 4) break; 
-      uint8_t len = buf[i+2];                       // payload count after [len]
-      size_t frame_len = 2 + 1 + (len + 1) + 1;     // hdr(2)+len(1)+[ID..payload..](len+1)+chk(1)
+      const uint8_t len = buf[i + 2];                       // payload count after [len]
+      const size_t frame_len = 2 + 1 + (len + 1) + 1;       // hdr(2)+len(1)+[ID..payload..](len+1)+chk(1)
+
+      if (frame_len < kGripperMinStateFrameLength || frame_len > kGripperMaxFrameLength) {
+        ++i;
+        continue;
+      }
+
+      if (i + frame_len > buf.size()) {
+        break;
+      }
 
       // checksum over bytes starting at [len]
-      uint32_t s = 0; for (size_t k = i+2; k < i+frame_len-1; ++k) s += buf[k];
+      uint32_t s = 0; for (size_t k = i + 2; k < i + frame_len - 1; ++k) s += buf[k];
       uint8_t chk = buf[i + frame_len - 1];
       if (chk != static_cast<uint8_t>(s & 0xFF)) { ++i; continue; }
-      if (buf[i+4] != 0x21 || buf[i+5] != 0x37) { ++i; continue; } // not a state frame
+      if (buf[i + 4] != 0x21 || buf[i + 5] != 0x37) { ++i; continue; } // not a state frame
 
-      current_units = static_cast<int16_t>(buf[i+9] | buf[i+10] << 8);
-      buf.erase(buf.begin()+static_cast<long>(i), buf.begin()+static_cast<long>(i+frame_len));
+      current_units = static_cast<int16_t>(buf[i + 9] | (buf[i + 10] << 8));
+      buf.erase(buf.begin()+static_cast<long>(i), buf.begin()+static_cast<long>(i + frame_len));
       return true;
     }
     
@@ -313,6 +323,9 @@ static inline bool gripper_try_parse_state(std::vector<uint8_t>& buf, int16_t& c
   }
   // drop consumed prefix
   if (i > 0) buf.erase(buf.begin(), buf.begin()+static_cast<long>(i));
+  if (buf.size() > kGripperMaxRxBufferLength) {
+    buf.erase(buf.begin(), buf.end() - static_cast<long>(kGripperMaxRxBufferLength));
+  }
   return false;
 }
 
