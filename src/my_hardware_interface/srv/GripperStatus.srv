@@ -1,6 +1,7 @@
 ---
 bool success
 string message
+string backend
 bool connected
 int32 target_units
 int32 position_units

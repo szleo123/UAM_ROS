@@ -27,6 +27,7 @@
 #include <vector>
 
 #include <libserial/SerialPort.h>
+#include <dynamixel_sdk/dynamixel_sdk.h>
 #ifdef MY_ARM_HARDWARE_HAS_PINOCCHIO
 #include <pinocchio/multibody/data.hpp>
 #include <pinocchio/multibody/model.hpp>
@@ -124,6 +125,12 @@ private:
     FULL_MIT = 2,
   };
 
+  enum class GripperBackend : uint8_t
+  {
+    LINEAR_ACTUATOR = 0,
+    DYNAMIXEL_XW430 = 1,
+  };
+
 public:
   struct GripperStatusData
   {
@@ -150,7 +157,20 @@ private:
   std::string gripper_port_path_ {"/dev/ttyUSB2"};
   unsigned int baudrate_ {115200};
   unsigned int gripper_baudrate_ {115200};
+  GripperBackend gripper_backend_{GripperBackend::LINEAR_ACTUATOR};
   uint8_t gripper_id_ = 1; 
+  double dynamixel_protocol_version_{2.0};
+  int32_t dynamixel_open_position_ticks_{2048};
+  int32_t dynamixel_close_position_ticks_{2600};
+  double dynamixel_goal_current_ma_{150.0};
+  double dynamixel_open_current_ma_{150.0};
+  double dynamixel_current_limit_ma_{500.0};
+  double dynamixel_temperature_limit_c_{75.0};
+  int dynamixel_bus_watchdog_ms_{200};
+  bool dynamixel_configure_on_start_{true};
+  bool dynamixel_apply_limits_on_start_{false};
+  int32_t dynamixel_last_goal_position_ticks_{std::numeric_limits<int32_t>::min()};
+  int dynamixel_last_goal_current_units_{std::numeric_limits<int>::min()};
   double pos_scale_ {1000.0}; // rad -> int16 scale
   std::array<double, 6> arm_joint_signs_ {{1.0, 1.0, -1.0, 1.0, 1.0, 1.0}};
   std::array<double, 6> arm_joint_offsets_ {{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
@@ -218,6 +238,8 @@ private:
   LibSerial::SerialPort gripper_;
   std::mutex gripper_mtx_;
   bool gripper_ok_ {false};
+  dynamixel::PortHandler * dynamixel_port_{nullptr};
+  dynamixel::PacketHandler * dynamixel_packet_{nullptr};
 
   // Used for reading data from the reader port
   std::vector<uint8_t> rx_buffer_;
@@ -261,6 +283,11 @@ private:
     return aux_joint_min_ + t * (aux_joint_max_ - aux_joint_min_);
   }
 
+  int32_t grip_to_dynamixel_ticks(double ros) const;
+  double dynamixel_ticks_to_grip(int32_t ticks) const;
+  int dynamixel_current_ma_to_units(double current_ma) const;
+  double dynamixel_current_units_to_ma(int current_units) const;
+
   std::vector<double> last_sent_commands_;
   void reset_joint_buffers(double value);
   void sync_commands_to_states();
@@ -269,6 +296,7 @@ private:
   size_t arm_joint_count() const;
   bool has_aux_joint() const;
   size_t aux_joint_index() const;
+  void parse_gripper_parameters();
   void parse_dynamics_parameters();
   void parse_stm32_parameters();
   void initialize_dynamics_model();
@@ -331,6 +359,51 @@ private:
     uint16_t value,
     std::string & message);
   void update_gripper_status_from_frame(const std::vector<uint8_t> & frame);
+  bool dynamixel_open_locked(std::string & message);
+  void dynamixel_close_locked();
+  bool dynamixel_initialize_locked(std::string & message);
+  bool dynamixel_query_status_locked(GripperStatusData & status, std::string & message);
+  bool dynamixel_command_position_locked(
+    int32_t goal_ticks,
+    double current_ma,
+    bool force,
+    std::string & message);
+  bool dynamixel_recover_locked(std::string & message);
+  bool dynamixel_read_protection_locked(GripperProtectionData & protection, std::string & message);
+  bool dynamixel_write_protection_locked(
+    int over_current_ma,
+    double over_temperature_c,
+    std::string & message);
+  bool dynamixel_write1_locked(
+    uint16_t address,
+    uint8_t value,
+    const std::string & label,
+    std::string & message);
+  bool dynamixel_write2_locked(
+    uint16_t address,
+    uint16_t value,
+    const std::string & label,
+    std::string & message);
+  bool dynamixel_write4_locked(
+    uint16_t address,
+    uint32_t value,
+    const std::string & label,
+    std::string & message);
+  bool dynamixel_read1_locked(
+    uint16_t address,
+    uint8_t & value,
+    const std::string & label,
+    std::string & message);
+  bool dynamixel_read2_locked(
+    uint16_t address,
+    uint16_t & value,
+    const std::string & label,
+    std::string & message);
+  bool dynamixel_read4_locked(
+    uint16_t address,
+    uint32_t & value,
+    const std::string & label,
+    std::string & message);
   bool start_damiao_initialization(const std::string & source, std::string & message);
   bool confirm_drop_pose(const std::string & source, std::string & message);
   bool can_write_motion_commands();

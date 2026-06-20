@@ -50,10 +50,22 @@ STM32_ARGUMENT_NAMES = [
 ]
 
 GRIPPER_ARGUMENT_NAMES = [
+    "gripper_backend",
     "aux_joint_min",
     "aux_joint_max",
     "gripper_port",
     "gripper_baudrate",
+    "dynamixel_id",
+    "dynamixel_protocol_version",
+    "dynamixel_open_position_ticks",
+    "dynamixel_close_position_ticks",
+    "dynamixel_goal_current_ma",
+    "dynamixel_open_current_ma",
+    "dynamixel_current_limit_ma",
+    "dynamixel_temperature_limit_c",
+    "dynamixel_bus_watchdog_ms",
+    "dynamixel_configure_on_start",
+    "dynamixel_apply_limits_on_start",
     "start_gripper_controller",
 ]
 
@@ -347,6 +359,11 @@ def common_bringup_launch_arguments(
 
     gripper_args = [
         DeclareLaunchArgument(
+            "gripper_backend",
+            default_value="linear_actuator",
+            description="Gripper backend: linear_actuator or dynamixel_xw430.",
+        ),
+        DeclareLaunchArgument(
             "aux_joint_min",
             default_value="-0.69",
             description="Minimum position for the auxiliary gripper/tool joint.",
@@ -365,6 +382,61 @@ def common_bringup_launch_arguments(
             "gripper_baudrate",
             default_value="115200",
             description="Baudrate for the gripper serial port.",
+        ),
+        DeclareLaunchArgument(
+            "dynamixel_id",
+            default_value="1",
+            description="DYNAMIXEL ID used when gripper_backend:=dynamixel_xw430.",
+        ),
+        DeclareLaunchArgument(
+            "dynamixel_protocol_version",
+            default_value="2.0",
+            description="DYNAMIXEL protocol version.",
+        ),
+        DeclareLaunchArgument(
+            "dynamixel_open_position_ticks",
+            default_value="2048",
+            description="Conservative open position tick value for DYNAMIXEL bench bringup.",
+        ),
+        DeclareLaunchArgument(
+            "dynamixel_close_position_ticks",
+            default_value="2600",
+            description="Conservative close/sampling position tick value for DYNAMIXEL bench bringup.",
+        ),
+        DeclareLaunchArgument(
+            "dynamixel_goal_current_ma",
+            default_value="150.0",
+            description="Default DYNAMIXEL goal current used for normal gripper moves.",
+        ),
+        DeclareLaunchArgument(
+            "dynamixel_open_current_ma",
+            default_value="150.0",
+            description="DYNAMIXEL goal current used for emergency/open recovery moves.",
+        ),
+        DeclareLaunchArgument(
+            "dynamixel_current_limit_ma",
+            default_value="500.0",
+            description="Bench-safe DYNAMIXEL EEPROM current limit. Applied only when dynamixel_apply_limits_on_start is true or via UI.",
+        ),
+        DeclareLaunchArgument(
+            "dynamixel_temperature_limit_c",
+            default_value="75.0",
+            description="Bench-safe DYNAMIXEL EEPROM temperature limit. Applied only when dynamixel_apply_limits_on_start is true or via UI.",
+        ),
+        DeclareLaunchArgument(
+            "dynamixel_bus_watchdog_ms",
+            default_value="200",
+            description="DYNAMIXEL bus watchdog in milliseconds; 0 disables.",
+        ),
+        DeclareLaunchArgument(
+            "dynamixel_configure_on_start",
+            default_value="true",
+            description="Torque off, set current-based position mode, then torque on during DYNAMIXEL startup.",
+        ),
+        DeclareLaunchArgument(
+            "dynamixel_apply_limits_on_start",
+            default_value="false",
+            description="Apply DYNAMIXEL EEPROM current/temperature limits during startup. Disabled by default for cautious bench bringup.",
         ),
         DeclareLaunchArgument(
             "start_gripper_controller",
@@ -734,9 +806,21 @@ def robot_description_mappings():
         "use_fake_hardware": LaunchConfiguration("use_fake_hardware"),
         "serial_port": LaunchConfiguration("serial_port"),
         "reader_port": LaunchConfiguration("reader_port"),
+        "gripper_backend": LaunchConfiguration("gripper_backend"),
         "gripper_port": LaunchConfiguration("gripper_port"),
         "baudrate": LaunchConfiguration("baudrate"),
         "gripper_baudrate": LaunchConfiguration("gripper_baudrate"),
+        "dynamixel_id": LaunchConfiguration("dynamixel_id"),
+        "dynamixel_protocol_version": LaunchConfiguration("dynamixel_protocol_version"),
+        "dynamixel_open_position_ticks": LaunchConfiguration("dynamixel_open_position_ticks"),
+        "dynamixel_close_position_ticks": LaunchConfiguration("dynamixel_close_position_ticks"),
+        "dynamixel_goal_current_ma": LaunchConfiguration("dynamixel_goal_current_ma"),
+        "dynamixel_open_current_ma": LaunchConfiguration("dynamixel_open_current_ma"),
+        "dynamixel_current_limit_ma": LaunchConfiguration("dynamixel_current_limit_ma"),
+        "dynamixel_temperature_limit_c": LaunchConfiguration("dynamixel_temperature_limit_c"),
+        "dynamixel_bus_watchdog_ms": LaunchConfiguration("dynamixel_bus_watchdog_ms"),
+        "dynamixel_configure_on_start": LaunchConfiguration("dynamixel_configure_on_start"),
+        "dynamixel_apply_limits_on_start": LaunchConfiguration("dynamixel_apply_limits_on_start"),
         "position_scale": LaunchConfiguration("position_scale"),
         "arm_joint_signs": LaunchConfiguration("arm_joint_signs"),
         "arm_joint_offsets": LaunchConfiguration("arm_joint_offsets"),

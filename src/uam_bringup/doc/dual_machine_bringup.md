@@ -320,6 +320,40 @@ ros2 launch uam_bringup operator_tools.launch.py \
 
 Only save to Flash after a temporary RAM setting has been tested on the bench.
 
+### DYNAMIXEL XW430 Snow-Sampling Gripper
+
+The same ROS gripper surface can be used with a DYNAMIXEL XW430-T200-R backend:
+
+```bash
+ros2 launch uam_bringup jetson.launch.py \
+  gripper_backend:=dynamixel_xw430 \
+  gripper_port:=/dev/ttyUSB0 \
+  gripper_baudrate:=57600
+```
+
+The expected hardware path is Jetson USB to U2D2/USB2Dynamixel, then RS485 to
+the XW430 with a proper external DYNAMIXEL power supply. Conservative bench
+defaults are used until the actual mechanism is calibrated:
+
+- `dynamixel_id:=1`
+- `dynamixel_open_position_ticks:=2048`
+- `dynamixel_close_position_ticks:=2600`
+- `dynamixel_goal_current_ma:=150.0`
+- `dynamixel_open_current_ma:=150.0`
+- `dynamixel_current_limit_ma:=500.0`
+- `dynamixel_temperature_limit_c:=75.0`
+
+The DYNAMIXEL backend configures current-based position mode by default. Normal
+gripper commands write `Goal Current(102)` and `Goal Position(116)`. Status reads
+`Present Current(126)`, `Present Position(132)`, `Present Temperature(146)`, and
+`Hardware Error Status(70)`.
+
+DYNAMIXEL protection settings differ from the branch gripper. `Current Limit(38)`
+and `Temperature Limit(31)` are EEPROM fields, so changing them is persistent and
+requires torque to be disabled briefly. There is no recovery-temperature register
+on this backend; the operator UI marks it as unavailable after loading protection
+data.
+
 ## Joint-3 Zeroing From Laptop
 
 For split mode, keep the Jetson headless:

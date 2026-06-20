@@ -1,6 +1,8 @@
 ---
 bool success
 string message
+string backend
 int32 over_current_ma
 float64 over_temperature_c
 float64 recovery_temperature_c
+bool recovery_temperature_available

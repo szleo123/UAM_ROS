@@ -11,6 +11,7 @@ set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 # find dependencies
 set(THIS_PACKAGE_INCLUDE_DEPENDS
   hardware_interface
+  dynamixel_sdk
   pluginlib
   rclcpp
   rclcpp_lifecycle

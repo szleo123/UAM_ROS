@@ -4,9 +4,21 @@
     <xacro:arg name="use_fake_hardware" default="true"/>
     <xacro:arg name="serial_port" default="/dev/ttyACM0"/>
     <xacro:arg name="reader_port" default="/dev/ttyUSB5"/>
+    <xacro:arg name="gripper_backend" default="linear_actuator"/>
     <xacro:arg name="gripper_port" default="/dev/ttyUSB6"/>
     <xacro:arg name="baudrate" default="230400"/>
     <xacro:arg name="gripper_baudrate" default="115200"/>
+    <xacro:arg name="dynamixel_id" default="1"/>
+    <xacro:arg name="dynamixel_protocol_version" default="2.0"/>
+    <xacro:arg name="dynamixel_open_position_ticks" default="2048"/>
+    <xacro:arg name="dynamixel_close_position_ticks" default="2600"/>
+    <xacro:arg name="dynamixel_goal_current_ma" default="150.0"/>
+    <xacro:arg name="dynamixel_open_current_ma" default="150.0"/>
+    <xacro:arg name="dynamixel_current_limit_ma" default="500.0"/>
+    <xacro:arg name="dynamixel_temperature_limit_c" default="75.0"/>
+    <xacro:arg name="dynamixel_bus_watchdog_ms" default="200"/>
+    <xacro:arg name="dynamixel_configure_on_start" default="true"/>
+    <xacro:arg name="dynamixel_apply_limits_on_start" default="false"/>
     <xacro:arg name="position_scale" default="1000"/>
     <xacro:arg name="arm_joint_signs" default="1,1,-1,1,1,1"/>
     <xacro:arg name="arm_joint_offsets" default="0,0,0,0,0,0"/>
@@ -65,9 +77,21 @@
         use_fake_hardware:=true
         serial_port:='/dev/ttyACM0'
         reader_port:='/dev/ttyUSB5'
+        gripper_backend:='linear_actuator'
         gripper_port:='/dev/ttyUSB6'
         baudrate:='230400'
         gripper_baudrate:='115200'
+        dynamixel_id:='1'
+        dynamixel_protocol_version:='2.0'
+        dynamixel_open_position_ticks:='2048'
+        dynamixel_close_position_ticks:='2600'
+        dynamixel_goal_current_ma:='150.0'
+        dynamixel_open_current_ma:='150.0'
+        dynamixel_current_limit_ma:='500.0'
+        dynamixel_temperature_limit_c:='75.0'
+        dynamixel_bus_watchdog_ms:='200'
+        dynamixel_configure_on_start:='true'
+        dynamixel_apply_limits_on_start:='false'
         position_scale:='1000'
         arm_joint_signs:='1,1,-1,1,1,1'
         arm_joint_offsets:='0,0,0,0,0,0'
@@ -116,9 +140,21 @@
                     <plugin>my_arm_hardware/MyArmHardware</plugin>
                     <param name="serial_port">${serial_port}</param>
                     <param name="reader_port">${reader_port}</param>
+                    <param name="gripper_backend">${gripper_backend}</param>
                     <param name="gripper_port">${gripper_port}</param>
                     <param name="baudrate">${baudrate}</param>
                     <param name="gripper_baudrate">${gripper_baudrate}</param>
+                    <param name="dynamixel_id">${dynamixel_id}</param>
+                    <param name="dynamixel_protocol_version">${dynamixel_protocol_version}</param>
+                    <param name="dynamixel_open_position_ticks">${dynamixel_open_position_ticks}</param>
+                    <param name="dynamixel_close_position_ticks">${dynamixel_close_position_ticks}</param>
+                    <param name="dynamixel_goal_current_ma">${dynamixel_goal_current_ma}</param>
+                    <param name="dynamixel_open_current_ma">${dynamixel_open_current_ma}</param>
+                    <param name="dynamixel_current_limit_ma">${dynamixel_current_limit_ma}</param>
+                    <param name="dynamixel_temperature_limit_c">${dynamixel_temperature_limit_c}</param>
+                    <param name="dynamixel_bus_watchdog_ms">${dynamixel_bus_watchdog_ms}</param>
+                    <param name="dynamixel_configure_on_start">${dynamixel_configure_on_start}</param>
+                    <param name="dynamixel_apply_limits_on_start">${dynamixel_apply_limits_on_start}</param>
                     <param name="position_scale">${position_scale}</param>
                     <param name="arm_joint_signs">${arm_joint_signs}</param>
                     <param name="arm_joint_offsets">${arm_joint_offsets}</param>

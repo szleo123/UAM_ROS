@@ -108,6 +108,25 @@ constexpr int kGripperOverCurrentMaxMa = 1500;
 constexpr double kGripperOverTemperatureMaxC = 80.0;
 constexpr double kGripperRecoveryTemperatureMinC = 20.0;
 constexpr double kGripperTemperatureMinGapC = 5.0;
+constexpr uint16_t kDxlAddrOperatingMode = 11;
+constexpr uint16_t kDxlAddrTemperatureLimit = 31;
+constexpr uint16_t kDxlAddrCurrentLimit = 38;
+constexpr uint16_t kDxlAddrTorqueEnable = 64;
+constexpr uint16_t kDxlAddrHardwareErrorStatus = 70;
+constexpr uint16_t kDxlAddrBusWatchdog = 98;
+constexpr uint16_t kDxlAddrGoalCurrent = 102;
+constexpr uint16_t kDxlAddrGoalPosition = 116;
+constexpr uint16_t kDxlAddrMoving = 122;
+constexpr uint16_t kDxlAddrPresentCurrent = 126;
+constexpr uint16_t kDxlAddrPresentPosition = 132;
+constexpr uint16_t kDxlAddrPresentInputVoltage = 144;
+constexpr uint16_t kDxlAddrPresentTemperature = 146;
+constexpr uint8_t kDxlOperatingModeCurrentBasedPosition = 5;
+constexpr uint8_t kDxlTorqueOff = 0;
+constexpr uint8_t kDxlTorqueOn = 1;
+constexpr double kDxlCurrentUnitMa = 2.69;
+constexpr int kDxlCurrentLimitMaxUnits = 648;
+constexpr double kDxlTemperatureLimitMaxC = 100.0;
 
 double safe_period_seconds(const rclcpp::Duration & period)
 {
@@ -584,14 +603,8 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
   if (info_.hardware_parameters.count("reader_port"))
     reader_port_path_ = info_.hardware_parameters.at("reader_port");
 
-  if (info_.hardware_parameters.count("gripper_port"))
-    gripper_port_path_ = info_.hardware_parameters.at("gripper_port");
-
   if (info_.hardware_parameters.count("baudrate"))
     baudrate_ = static_cast<unsigned int>(std::stoi(info_.hardware_parameters.at("baudrate")));
-
-  if (info_.hardware_parameters.count("gripper_baudrate"))
-    gripper_baudrate_ = static_cast<unsigned int>(std::stoi(info_.hardware_parameters.at("gripper_baudrate")));
 
   if (info_.hardware_parameters.count("position_scale"))
     pos_scale_ = std::stod(info_.hardware_parameters.at("position_scale"));
@@ -647,6 +660,7 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
   if (info_.hardware_parameters.count("aux_joint_max"))
     aux_joint_max_ = std::stod(info_.hardware_parameters.at("aux_joint_max"));
 
+  parse_gripper_parameters();
   parse_dynamics_parameters();
 
   hw_states_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
@@ -701,12 +715,15 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
   }
 
   RCLCPP_INFO(get_logger(),
-              "Initialized MyArmSystem with %i joints, arm_cdc_port=%s, baud=%u, scale=%.1f, slowdown=%.1f, first_power_on=%s, stm32_control_mode=%u, stm32_zero_trigger=%s, command_frame=%s, dynamics_feedforward=%s, dynamics_mode=%s, arm_joint_offsets=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], feedback_velocity_alpha=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], dynamics_torque_scales=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
+              "Initialized MyArmSystem with %i joints, arm_cdc_port=%s, baud=%u, scale=%.1f, slowdown=%.1f, first_power_on=%s, stm32_control_mode=%u, stm32_zero_trigger=%s, gripper_backend=%s, gripper_port=%s, gripper_baud=%u, command_frame=%s, dynamics_feedforward=%s, dynamics_mode=%s, arm_joint_offsets=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], feedback_velocity_alpha=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], dynamics_torque_scales=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
               static_cast<int>(info_.joints.size()), serial_port_path_.c_str(),
               baudrate_, pos_scale_, hw_slowdown_,
               first_power_on_ ? "true" : "false",
               static_cast<unsigned>(stm32_control_mode_),
               enable_stm32_zero_trigger_ ? "true" : "false",
+              gripper_backend_ == GripperBackend::DYNAMIXEL_XW430 ? "dynamixel_xw430" : "linear_actuator",
+              gripper_port_path_.c_str(),
+              gripper_baudrate_,
               arm_command_frame_format_ == ArmCommandFrameFormat::POSITION_TORQUE ? "position_torque" : "legacy_position",
               enable_dynamics_feedforward_ ? "true" : "false",
               dynamics_mode_ == DynamicsMode::FULL ? "full" :
@@ -747,21 +764,36 @@ hardware_interface::CallbackReturn MyArmHardware::on_configure(
 
   reader_ok_ = serial_ok_;
 
-  try 
+  if (gripper_backend_ == GripperBackend::LINEAR_ACTUATOR)
+  {
+    try 
+    {
+      std::scoped_lock gk(gripper_mtx_);
+      open_serial_port(gripper_, gripper_port_path_, gripper_baudrate_);
+      gripper_ok_ = true;
+      gripper_.FlushIOBuffers();
+      gripper_rx_.clear();
+      RCLCPP_INFO(get_logger(), "Linear actuator gripper port %s opened at %u baud", 
+                  gripper_port_path_.c_str(), gripper_baudrate_);
+    }
+    catch (const std::exception & e)
+    {
+      RCLCPP_ERROR(get_logger(), "Error configuring gripper port %s: %s", 
+                   gripper_port_path_.c_str(), e.what());
+      gripper_ok_ = false;
+    }
+  }
+  else
   {
     std::scoped_lock gk(gripper_mtx_);
-    open_serial_port(gripper_, gripper_port_path_, gripper_baudrate_);
-    gripper_ok_ = true;
-    gripper_.FlushIOBuffers();
-    gripper_rx_.clear();
-    RCLCPP_INFO(get_logger(), "Gripper port %s opened at %u baud", 
-                gripper_port_path_.c_str(), gripper_baudrate_);
-  }
-  catch (const std::exception & e)
-  {
-    RCLCPP_ERROR(get_logger(), "Error configuring gripper port %s: %s", 
-                 gripper_port_path_.c_str(), e.what());
-    gripper_ok_ = false;
+    std::string message;
+    gripper_ok_ = dynamixel_open_locked(message);
+    if (gripper_ok_ && dynamixel_configure_on_start_)
+      gripper_ok_ = dynamixel_initialize_locked(message);
+    if (gripper_ok_)
+      RCLCPP_WARN(get_logger(), "%s", message.c_str());
+    else
+      RCLCPP_ERROR(get_logger(), "%s", message.c_str());
   }
 
   reset_joint_buffers(0.0);
@@ -1042,7 +1074,7 @@ hardware_interface::return_type MyArmHardware::read(
 
   }
 
-  if (gripper_ok_) {
+  if (gripper_ok_ && gripper_backend_ == GripperBackend::LINEAR_ACTUATOR) {
     try {
       std::scoped_lock gk(gripper_mtx_);
       // pull in all available bytes (non-blocking)
@@ -1077,6 +1109,38 @@ hardware_interface::return_type MyArmHardware::read(
       gripper_ok_ = false;
       RCLCPP_ERROR_THROTTLE(get_logger(), *clock_, 2000,
         "Gripper read failed: %s", e.what());
+    }
+  }
+  else if (gripper_ok_ && gripper_backend_ == GripperBackend::DYNAMIXEL_XW430) {
+    try {
+      std::scoped_lock gk(gripper_mtx_);
+      GripperStatusData status;
+      std::string message;
+      if (dynamixel_query_status_locked(status, message)) {
+        {
+          std::lock_guard<std::mutex> lock(gripper_status_mtx_);
+          last_gripper_status_ = status;
+        }
+        if (has_aux_joint()) {
+          const size_t aux_idx = aux_joint_index();
+          const double prev = hw_states_[aux_idx];
+          hw_states_[aux_idx] = status.position;
+          hw_velocities_[aux_idx] = (hw_states_[aux_idx] - prev) / safe_period_seconds(period);
+          hw_efforts_[aux_idx] = static_cast<double>(status.current_ma) / 1000.0;
+        }
+        RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 2000,
+          "DYNAMIXEL gripper read: ticks %d -> ROS %.3f, current=%.0fmA, temp=%.0fC, hw_error=0x%02X",
+          status.position_units, status.position,
+          static_cast<double>(status.current_ma),
+          status.temperature_c,
+          status.error_flags);
+      } else {
+        RCLCPP_WARN_THROTTLE(get_logger(), *clock_, 2000, "%s", message.c_str());
+      }
+    } catch (const std::exception& e) {
+      gripper_ok_ = false;
+      RCLCPP_ERROR_THROTTLE(get_logger(), *clock_, 2000,
+        "DYNAMIXEL gripper read failed: %s", e.what());
     }
   }
 
@@ -1124,7 +1188,7 @@ hardware_interface::return_type MyArmHardware::write(
   }
 
   // ---- Gripper TX (full-duplex same port) ----
-  if (gripper_ok_ && has_aux_joint()) {
+  if (gripper_ok_ && has_aux_joint() && gripper_backend_ == GripperBackend::LINEAR_ACTUATOR) {
     const size_t aux_idx = aux_joint_index();
     const double ros_cmd = hw_commands_[aux_idx];              // ROS units (e.g., radians)
     uint16_t tgt = grip_to_units(ros_cmd);
@@ -1142,6 +1206,26 @@ hardware_interface::return_type MyArmHardware::write(
         "Gripper write failed: %s", e.what());
     }
     
+  }
+  else if (gripper_ok_ && has_aux_joint() && gripper_backend_ == GripperBackend::DYNAMIXEL_XW430) {
+    const size_t aux_idx = aux_joint_index();
+    const double ros_cmd = hw_commands_[aux_idx];
+    const int32_t goal_ticks = grip_to_dynamixel_ticks(ros_cmd);
+    try {
+      std::scoped_lock gk(gripper_mtx_);
+      std::string message;
+      if (!dynamixel_command_position_locked(goal_ticks, dynamixel_goal_current_ma_, false, message)) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *clock_, 2000, "%s", message.c_str());
+      } else {
+        RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 2000,
+          "DYNAMIXEL gripper write: ROS %.3f -> ticks %d, current_limit=%.0fmA",
+          ros_cmd, goal_ticks, dynamixel_goal_current_ma_);
+      }
+    } catch (const std::exception& e) {
+      gripper_ok_ = false;
+      RCLCPP_ERROR_THROTTLE(get_logger(), *clock_, 2000,
+        "DYNAMIXEL gripper write failed: %s", e.what());
+    }
   }
 
   if (serial_ok_)
@@ -1241,7 +1325,10 @@ MyArmHardware::on_cleanup(const rclcpp_lifecycle::State & /*previous_state*/)
 
   try {
     std::scoped_lock gk(gripper_mtx_);
-    close_serial_port(gripper_);
+    if (gripper_backend_ == GripperBackend::DYNAMIXEL_XW430)
+      dynamixel_close_locked();
+    else
+      close_serial_port(gripper_);
     gripper_ok_ = false;
     gripper_rx_.clear();
   } catch (const std::exception &e) {
@@ -1325,6 +1412,110 @@ bool MyArmHardware::has_aux_joint() const
 size_t MyArmHardware::aux_joint_index() const
 {
   return info_.joints.empty() ? 0 : info_.joints.size() - 1;
+}
+
+int32_t MyArmHardware::grip_to_dynamixel_ticks(double ros) const
+{
+  const double lo = std::min(aux_joint_min_, aux_joint_max_);
+  const double hi = std::max(aux_joint_min_, aux_joint_max_);
+  const double x = std::clamp(ros, lo, hi);
+  const double span = hi - lo;
+  const double t = span <= std::numeric_limits<double>::epsilon() ? 0.0 : (x - lo) / span;
+  const double ticks =
+    static_cast<double>(dynamixel_close_position_ticks_) +
+    t * static_cast<double>(dynamixel_open_position_ticks_ - dynamixel_close_position_ticks_);
+  return static_cast<int32_t>(std::lround(ticks));
+}
+
+double MyArmHardware::dynamixel_ticks_to_grip(int32_t ticks) const
+{
+  const double denom =
+    static_cast<double>(dynamixel_open_position_ticks_ - dynamixel_close_position_ticks_);
+  const double t = std::abs(denom) <= std::numeric_limits<double>::epsilon() ?
+    0.0 :
+    (static_cast<double>(ticks - dynamixel_close_position_ticks_) / denom);
+  const double clamped = std::clamp(t, 0.0, 1.0);
+  const double lo = std::min(aux_joint_min_, aux_joint_max_);
+  const double hi = std::max(aux_joint_min_, aux_joint_max_);
+  return lo + clamped * (hi - lo);
+}
+
+int MyArmHardware::dynamixel_current_ma_to_units(double current_ma) const
+{
+  if (!std::isfinite(current_ma))
+    return 0;
+  const double units = current_ma / kDxlCurrentUnitMa;
+  return std::clamp(
+    static_cast<int>(std::lround(units)),
+    -kDxlCurrentLimitMaxUnits,
+    kDxlCurrentLimitMaxUnits);
+}
+
+double MyArmHardware::dynamixel_current_units_to_ma(int current_units) const
+{
+  return static_cast<double>(current_units) * kDxlCurrentUnitMa;
+}
+
+void MyArmHardware::parse_gripper_parameters()
+{
+  if (info_.hardware_parameters.count("gripper_backend"))
+  {
+    const std::string backend = trim_copy(info_.hardware_parameters.at("gripper_backend"));
+    if (backend == "dynamixel" || backend == "dynamixel_xw430")
+      gripper_backend_ = GripperBackend::DYNAMIXEL_XW430;
+    else if (backend == "linear_actuator" || backend == "linear" || backend.empty())
+      gripper_backend_ = GripperBackend::LINEAR_ACTUATOR;
+    else
+      RCLCPP_WARN(get_logger(), "Unknown gripper_backend '%s'; using linear_actuator.", backend.c_str());
+  }
+  if (info_.hardware_parameters.count("gripper_port"))
+    gripper_port_path_ = trim_copy(info_.hardware_parameters.at("gripper_port"));
+  if (info_.hardware_parameters.count("gripper_baudrate"))
+    gripper_baudrate_ = static_cast<unsigned int>(std::stoi(info_.hardware_parameters.at("gripper_baudrate")));
+  if (info_.hardware_parameters.count("dynamixel_id"))
+    gripper_id_ = static_cast<uint8_t>(
+      std::clamp(std::stoi(info_.hardware_parameters.at("dynamixel_id")), 0, 252));
+  if (info_.hardware_parameters.count("dynamixel_protocol_version"))
+    dynamixel_protocol_version_ = std::stod(info_.hardware_parameters.at("dynamixel_protocol_version"));
+  if (info_.hardware_parameters.count("dynamixel_open_position_ticks"))
+    dynamixel_open_position_ticks_ = static_cast<int32_t>(
+      std::stol(info_.hardware_parameters.at("dynamixel_open_position_ticks")));
+  if (info_.hardware_parameters.count("dynamixel_close_position_ticks"))
+    dynamixel_close_position_ticks_ = static_cast<int32_t>(
+      std::stol(info_.hardware_parameters.at("dynamixel_close_position_ticks")));
+  if (info_.hardware_parameters.count("dynamixel_goal_current_ma"))
+    dynamixel_goal_current_ma_ =
+      std::max(0.0, std::stod(info_.hardware_parameters.at("dynamixel_goal_current_ma")));
+  if (info_.hardware_parameters.count("dynamixel_open_current_ma"))
+    dynamixel_open_current_ma_ =
+      std::max(0.0, std::stod(info_.hardware_parameters.at("dynamixel_open_current_ma")));
+  if (info_.hardware_parameters.count("dynamixel_current_limit_ma"))
+    dynamixel_current_limit_ma_ =
+      std::max(0.0, std::stod(info_.hardware_parameters.at("dynamixel_current_limit_ma")));
+  if (info_.hardware_parameters.count("dynamixel_temperature_limit_c"))
+    dynamixel_temperature_limit_c_ =
+      std::clamp(
+        std::stod(info_.hardware_parameters.at("dynamixel_temperature_limit_c")),
+        0.0,
+        kDxlTemperatureLimitMaxC);
+  if (info_.hardware_parameters.count("dynamixel_bus_watchdog_ms"))
+    dynamixel_bus_watchdog_ms_ =
+      std::max(0, std::stoi(info_.hardware_parameters.at("dynamixel_bus_watchdog_ms")));
+  if (info_.hardware_parameters.count("dynamixel_configure_on_start"))
+    dynamixel_configure_on_start_ =
+      string_to_bool(info_.hardware_parameters.at("dynamixel_configure_on_start"));
+  if (info_.hardware_parameters.count("dynamixel_apply_limits_on_start"))
+    dynamixel_apply_limits_on_start_ =
+      string_to_bool(info_.hardware_parameters.at("dynamixel_apply_limits_on_start"));
+
+  if (gripper_backend_ == GripperBackend::DYNAMIXEL_XW430 &&
+      gripper_baudrate_ == 115200)
+  {
+    RCLCPP_WARN(
+      get_logger(),
+      "gripper_backend=dynamixel_xw430 with gripper_baudrate=115200. "
+      "Factory default DYNAMIXEL baudrate is often 57600; override gripper_baudrate if needed.");
+  }
 }
 
 void MyArmHardware::parse_stm32_parameters()
@@ -2239,6 +2430,8 @@ void MyArmHardware::setup_homing_interface()
       std::string message;
       response->success = gripper_query_status(status, message);
       response->message = message;
+      response->backend =
+        gripper_backend_ == GripperBackend::DYNAMIXEL_XW430 ? "dynamixel_xw430" : "linear_actuator";
       response->connected = gripper_ok_;
       response->target_units = status.target_units;
       response->position_units = status.position_units;
@@ -2246,10 +2439,20 @@ void MyArmHardware::setup_homing_interface()
       response->current_ma = status.current_ma;
       response->temperature_c = status.temperature_c;
       response->error_flags = status.error_flags;
-      response->stall_protection = (status.error_flags & 0x01) != 0;
-      response->over_temperature = (status.error_flags & 0x02) != 0;
-      response->over_current = (status.error_flags & 0x04) != 0;
-      response->motor_abnormal = (status.error_flags & 0x08) != 0;
+      if (gripper_backend_ == GripperBackend::DYNAMIXEL_XW430)
+      {
+        response->stall_protection = false;
+        response->over_temperature = (status.error_flags & 0x04) != 0;
+        response->over_current = (status.error_flags & 0x30) != 0;
+        response->motor_abnormal = (status.error_flags & 0x28) != 0;
+      }
+      else
+      {
+        response->stall_protection = (status.error_flags & 0x01) != 0;
+        response->over_temperature = (status.error_flags & 0x02) != 0;
+        response->over_current = (status.error_flags & 0x04) != 0;
+        response->motor_abnormal = (status.error_flags & 0x08) != 0;
+      }
     });
 
   gripper_protection_get_srv_ =
@@ -2263,9 +2466,13 @@ void MyArmHardware::setup_homing_interface()
         std::string message;
         response->success = gripper_query_protection(protection, message);
         response->message = message;
+        response->backend =
+          gripper_backend_ == GripperBackend::DYNAMIXEL_XW430 ? "dynamixel_xw430" : "linear_actuator";
         response->over_current_ma = protection.over_current_ma;
         response->over_temperature_c = protection.over_temperature_c;
         response->recovery_temperature_c = protection.recovery_temperature_c;
+        response->recovery_temperature_available =
+          gripper_backend_ != GripperBackend::DYNAMIXEL_XW430;
       });
 
   gripper_protection_set_srv_ =
@@ -2641,8 +2848,408 @@ void MyArmHardware::update_gripper_status_from_frame(const std::vector<uint8_t> 
   last_gripper_status_ = status;
 }
 
+bool MyArmHardware::dynamixel_open_locked(std::string & message)
+{
+  dynamixel_port_ = dynamixel::PortHandler::getPortHandler(gripper_port_path_.c_str());
+  dynamixel_packet_ = dynamixel::PacketHandler::getPacketHandler(dynamixel_protocol_version_);
+  if (!dynamixel_port_ || !dynamixel_packet_)
+  {
+    message = "Failed to create DYNAMIXEL SDK port/packet handlers.";
+    return false;
+  }
+  if (!dynamixel_port_->openPort())
+  {
+    message = "Failed to open DYNAMIXEL port " + gripper_port_path_;
+    return false;
+  }
+  if (!dynamixel_port_->setBaudRate(static_cast<int>(gripper_baudrate_)))
+  {
+    dynamixel_port_->closePort();
+    message = "Failed to set DYNAMIXEL baudrate to " + std::to_string(gripper_baudrate_);
+    return false;
+  }
+
+  uint16_t model_number = 0;
+  uint8_t error = 0;
+  const int result = dynamixel_packet_->ping(dynamixel_port_, gripper_id_, &model_number, &error);
+  if (result != COMM_SUCCESS || error != 0)
+  {
+    dynamixel_port_->closePort();
+    std::ostringstream ss;
+    ss << "Failed to ping DYNAMIXEL ID " << static_cast<int>(gripper_id_)
+       << " on " << gripper_port_path_ << ": "
+       << dynamixel_packet_->getTxRxResult(result)
+       << ", error=0x" << std::hex << static_cast<int>(error);
+    message = ss.str();
+    return false;
+  }
+
+  std::ostringstream ss;
+  ss << "DYNAMIXEL gripper connected: port=" << gripper_port_path_
+     << ", baud=" << gripper_baudrate_
+     << ", id=" << static_cast<int>(gripper_id_)
+     << ", model=" << model_number << ".";
+  message = ss.str();
+  return true;
+}
+
+void MyArmHardware::dynamixel_close_locked()
+{
+  if (dynamixel_port_)
+  {
+    dynamixel_port_->closePort();
+  }
+  dynamixel_port_ = nullptr;
+  dynamixel_packet_ = nullptr;
+  dynamixel_last_goal_position_ticks_ = std::numeric_limits<int32_t>::min();
+  dynamixel_last_goal_current_units_ = std::numeric_limits<int>::min();
+}
+
+bool MyArmHardware::dynamixel_write1_locked(
+  uint16_t address,
+  uint8_t value,
+  const std::string & label,
+  std::string & message)
+{
+  uint8_t error = 0;
+  const int result = dynamixel_packet_->write1ByteTxRx(
+    dynamixel_port_, gripper_id_, address, value, &error);
+  if (result == COMM_SUCCESS && error == 0)
+    return true;
+  std::ostringstream ss;
+  ss << "DYNAMIXEL write " << label << " failed: "
+     << dynamixel_packet_->getTxRxResult(result)
+     << ", error=0x" << std::hex << static_cast<int>(error);
+  message = ss.str();
+  return false;
+}
+
+bool MyArmHardware::dynamixel_write2_locked(
+  uint16_t address,
+  uint16_t value,
+  const std::string & label,
+  std::string & message)
+{
+  uint8_t error = 0;
+  const int result = dynamixel_packet_->write2ByteTxRx(
+    dynamixel_port_, gripper_id_, address, value, &error);
+  if (result == COMM_SUCCESS && error == 0)
+    return true;
+  std::ostringstream ss;
+  ss << "DYNAMIXEL write " << label << " failed: "
+     << dynamixel_packet_->getTxRxResult(result)
+     << ", error=0x" << std::hex << static_cast<int>(error);
+  message = ss.str();
+  return false;
+}
+
+bool MyArmHardware::dynamixel_write4_locked(
+  uint16_t address,
+  uint32_t value,
+  const std::string & label,
+  std::string & message)
+{
+  uint8_t error = 0;
+  const int result = dynamixel_packet_->write4ByteTxRx(
+    dynamixel_port_, gripper_id_, address, value, &error);
+  if (result == COMM_SUCCESS && error == 0)
+    return true;
+  std::ostringstream ss;
+  ss << "DYNAMIXEL write " << label << " failed: "
+     << dynamixel_packet_->getTxRxResult(result)
+     << ", error=0x" << std::hex << static_cast<int>(error);
+  message = ss.str();
+  return false;
+}
+
+bool MyArmHardware::dynamixel_read1_locked(
+  uint16_t address,
+  uint8_t & value,
+  const std::string & label,
+  std::string & message)
+{
+  uint8_t error = 0;
+  const int result = dynamixel_packet_->read1ByteTxRx(
+    dynamixel_port_, gripper_id_, address, &value, &error);
+  if (result == COMM_SUCCESS && error == 0)
+    return true;
+  std::ostringstream ss;
+  ss << "DYNAMIXEL read " << label << " failed: "
+     << dynamixel_packet_->getTxRxResult(result)
+     << ", error=0x" << std::hex << static_cast<int>(error);
+  message = ss.str();
+  return false;
+}
+
+bool MyArmHardware::dynamixel_read2_locked(
+  uint16_t address,
+  uint16_t & value,
+  const std::string & label,
+  std::string & message)
+{
+  uint8_t error = 0;
+  const int result = dynamixel_packet_->read2ByteTxRx(
+    dynamixel_port_, gripper_id_, address, &value, &error);
+  if (result == COMM_SUCCESS && error == 0)
+    return true;
+  std::ostringstream ss;
+  ss << "DYNAMIXEL read " << label << " failed: "
+     << dynamixel_packet_->getTxRxResult(result)
+     << ", error=0x" << std::hex << static_cast<int>(error);
+  message = ss.str();
+  return false;
+}
+
+bool MyArmHardware::dynamixel_read4_locked(
+  uint16_t address,
+  uint32_t & value,
+  const std::string & label,
+  std::string & message)
+{
+  uint8_t error = 0;
+  const int result = dynamixel_packet_->read4ByteTxRx(
+    dynamixel_port_, gripper_id_, address, &value, &error);
+  if (result == COMM_SUCCESS && error == 0)
+    return true;
+  std::ostringstream ss;
+  ss << "DYNAMIXEL read " << label << " failed: "
+     << dynamixel_packet_->getTxRxResult(result)
+     << ", error=0x" << std::hex << static_cast<int>(error);
+  message = ss.str();
+  return false;
+}
+
+bool MyArmHardware::dynamixel_initialize_locked(std::string & message)
+{
+  if (!dynamixel_write1_locked(kDxlAddrTorqueEnable, kDxlTorqueOff, "Torque Enable=0", message))
+    return false;
+  if (!dynamixel_write1_locked(
+      kDxlAddrOperatingMode,
+      kDxlOperatingModeCurrentBasedPosition,
+      "Operating Mode=current_based_position",
+      message))
+    return false;
+
+  if (dynamixel_apply_limits_on_start_)
+  {
+    if (!dynamixel_write_protection_locked(
+        static_cast<int>(std::lround(dynamixel_current_limit_ma_)),
+        dynamixel_temperature_limit_c_,
+        message))
+      return false;
+  }
+
+  if (!dynamixel_write1_locked(kDxlAddrTorqueEnable, kDxlTorqueOn, "Torque Enable=1", message))
+    return false;
+
+  const int watchdog_units =
+    dynamixel_bus_watchdog_ms_ <= 0 ? 0 : std::clamp(
+      static_cast<int>(std::lround(static_cast<double>(dynamixel_bus_watchdog_ms_) / 20.0)),
+      1,
+      127);
+  if (!dynamixel_write1_locked(
+      kDxlAddrBusWatchdog,
+      static_cast<uint8_t>(watchdog_units),
+      "Bus Watchdog",
+      message))
+    return false;
+
+  if (!dynamixel_command_position_locked(
+      dynamixel_open_position_ticks_,
+      dynamixel_open_current_ma_,
+      true,
+      message))
+    return false;
+
+  std::ostringstream ss;
+  ss << "DYNAMIXEL gripper initialized in current-based position mode. "
+     << "open_ticks=" << dynamixel_open_position_ticks_
+     << ", close_ticks=" << dynamixel_close_position_ticks_
+     << ", goal_current=" << dynamixel_goal_current_ma_ << "mA.";
+  message = ss.str();
+  return true;
+}
+
+bool MyArmHardware::dynamixel_query_status_locked(
+  GripperStatusData & status,
+  std::string & message)
+{
+  uint16_t current_raw = 0;
+  uint32_t position_raw = 0;
+  uint8_t temperature = 0;
+  uint8_t hardware_error = 0;
+  uint32_t goal_position_raw = static_cast<uint32_t>(dynamixel_last_goal_position_ticks_);
+
+  if (!dynamixel_read2_locked(kDxlAddrPresentCurrent, current_raw, "Present Current", message))
+    return false;
+  if (!dynamixel_read4_locked(kDxlAddrPresentPosition, position_raw, "Present Position", message))
+    return false;
+  if (!dynamixel_read1_locked(kDxlAddrPresentTemperature, temperature, "Present Temperature", message))
+    return false;
+  if (!dynamixel_read1_locked(kDxlAddrHardwareErrorStatus, hardware_error, "Hardware Error Status", message))
+    return false;
+  (void)dynamixel_read4_locked(kDxlAddrGoalPosition, goal_position_raw, "Goal Position", message);
+
+  const auto present_current_units =
+    static_cast<int16_t>(static_cast<uint16_t>(current_raw));
+  const auto present_position_ticks =
+    static_cast<int32_t>(static_cast<uint32_t>(position_raw));
+
+  status.valid = true;
+  status.target_units = static_cast<int32_t>(goal_position_raw);
+  status.position_units = present_position_ticks;
+  status.position = dynamixel_ticks_to_grip(present_position_ticks);
+  status.current_ma = static_cast<int>(std::lround(dynamixel_current_units_to_ma(present_current_units)));
+  status.temperature_c = static_cast<double>(temperature);
+  status.error_flags = hardware_error;
+  message = "DYNAMIXEL gripper status received.";
+  return true;
+}
+
+bool MyArmHardware::dynamixel_command_position_locked(
+  int32_t goal_ticks,
+  double current_ma,
+  bool force,
+  std::string & message)
+{
+  const int current_units = std::abs(dynamixel_current_ma_to_units(current_ma));
+  if (!force &&
+      goal_ticks == dynamixel_last_goal_position_ticks_ &&
+      current_units == dynamixel_last_goal_current_units_)
+  {
+    message = "DYNAMIXEL gripper goal unchanged.";
+    return true;
+  }
+
+  if (!dynamixel_write2_locked(
+      kDxlAddrGoalCurrent,
+      static_cast<uint16_t>(current_units),
+      "Goal Current",
+      message))
+    return false;
+  if (!dynamixel_write4_locked(
+      kDxlAddrGoalPosition,
+      static_cast<uint32_t>(goal_ticks),
+      "Goal Position",
+      message))
+    return false;
+
+  dynamixel_last_goal_position_ticks_ = goal_ticks;
+  dynamixel_last_goal_current_units_ = current_units;
+  message = "DYNAMIXEL gripper goal written.";
+  return true;
+}
+
+bool MyArmHardware::dynamixel_recover_locked(std::string & message)
+{
+  uint8_t error_status = 0;
+  (void)dynamixel_read1_locked(
+    kDxlAddrHardwareErrorStatus,
+    error_status,
+    "Hardware Error Status",
+    message);
+
+  if (error_status != 0)
+  {
+    uint8_t error = 0;
+    const int result = dynamixel_packet_->reboot(dynamixel_port_, gripper_id_, &error);
+    if (result != COMM_SUCCESS || error != 0)
+    {
+      std::ostringstream ss;
+      ss << "DYNAMIXEL reboot failed: "
+         << dynamixel_packet_->getTxRxResult(result)
+         << ", error=0x" << std::hex << static_cast<int>(error);
+      message = ss.str();
+      return false;
+    }
+    rclcpp::sleep_for(std::chrono::milliseconds(300));
+  }
+
+  dynamixel_last_goal_position_ticks_ = std::numeric_limits<int32_t>::min();
+  dynamixel_last_goal_current_units_ = std::numeric_limits<int>::min();
+  if (!dynamixel_initialize_locked(message))
+    return false;
+  message = error_status == 0 ?
+    "DYNAMIXEL had no hardware error; reinitialized torque/mode." :
+    "DYNAMIXEL rebooted after hardware error and reinitialized.";
+  return true;
+}
+
+bool MyArmHardware::dynamixel_read_protection_locked(
+  GripperProtectionData & protection,
+  std::string & message)
+{
+  uint16_t current_limit_raw = 0;
+  uint8_t temperature_limit = 0;
+  if (!dynamixel_read2_locked(kDxlAddrCurrentLimit, current_limit_raw, "Current Limit", message))
+    return false;
+  if (!dynamixel_read1_locked(kDxlAddrTemperatureLimit, temperature_limit, "Temperature Limit", message))
+    return false;
+
+  protection.over_current_ma = static_cast<int>(
+    std::lround(dynamixel_current_units_to_ma(static_cast<int>(current_limit_raw))));
+  protection.over_temperature_c = static_cast<double>(temperature_limit);
+  protection.recovery_temperature_c = 0.0;
+  message = "DYNAMIXEL protection parameters received. Recovery temperature is not available on this backend.";
+  return true;
+}
+
+bool MyArmHardware::dynamixel_write_protection_locked(
+  int over_current_ma,
+  double over_temperature_c,
+  std::string & message)
+{
+  if (!std::isfinite(over_temperature_c))
+  {
+    message = "DYNAMIXEL temperature limit must be finite.";
+    return false;
+  }
+  const int current_units = std::clamp(
+    dynamixel_current_ma_to_units(static_cast<double>(over_current_ma)),
+    0,
+    kDxlCurrentLimitMaxUnits);
+  const int temperature_units = std::clamp(
+    static_cast<int>(std::lround(over_temperature_c)),
+    0,
+    static_cast<int>(kDxlTemperatureLimitMaxC));
+
+  uint8_t torque_enabled = 0;
+  (void)dynamixel_read1_locked(kDxlAddrTorqueEnable, torque_enabled, "Torque Enable", message);
+  if (!dynamixel_write1_locked(kDxlAddrTorqueEnable, kDxlTorqueOff, "Torque Enable=0", message))
+    return false;
+  if (!dynamixel_write2_locked(
+      kDxlAddrCurrentLimit,
+      static_cast<uint16_t>(current_units),
+      "Current Limit",
+      message))
+    return false;
+  if (!dynamixel_write1_locked(
+      kDxlAddrTemperatureLimit,
+      static_cast<uint8_t>(temperature_units),
+      "Temperature Limit",
+      message))
+    return false;
+  if (torque_enabled != 0 &&
+      !dynamixel_write1_locked(kDxlAddrTorqueEnable, kDxlTorqueOn, "Torque Enable=1", message))
+    return false;
+
+  std::ostringstream ss;
+  ss << "DYNAMIXEL EEPROM protection updated: current_limit="
+     << std::lround(dynamixel_current_units_to_ma(current_units))
+     << "mA, temperature_limit=" << temperature_units
+     << "C. Values persist without a separate Flash save command.";
+  message = ss.str();
+  return true;
+}
+
 bool MyArmHardware::gripper_query_status(GripperStatusData & status, std::string & message)
 {
+  if (gripper_backend_ == GripperBackend::DYNAMIXEL_XW430)
+  {
+    std::scoped_lock gk(gripper_mtx_);
+    return dynamixel_query_status_locked(status, message);
+  }
+
   std::scoped_lock gk(gripper_mtx_);
   const auto frame = gripper_pack_single_control(gripper_id_, kGripperMcQueryStatus);
   if (!gripper_send_frame_locked(frame, message))
@@ -2672,6 +3279,12 @@ bool MyArmHardware::gripper_query_status(GripperStatusData & status, std::string
 
 bool MyArmHardware::gripper_clear_fault(std::string & message)
 {
+  if (gripper_backend_ == GripperBackend::DYNAMIXEL_XW430)
+  {
+    std::scoped_lock gk(gripper_mtx_);
+    return dynamixel_recover_locked(message);
+  }
+
   std::scoped_lock gk(gripper_mtx_);
   if (!gripper_send_single_control_locked(kGripperMcClearFault, message))
     return false;
@@ -2681,6 +3294,27 @@ bool MyArmHardware::gripper_clear_fault(std::string & message)
 
 bool MyArmHardware::gripper_clear_fault_and_open(std::string & message)
 {
+  if (gripper_backend_ == GripperBackend::DYNAMIXEL_XW430)
+  {
+    std::scoped_lock gk(gripper_mtx_);
+    if (!dynamixel_recover_locked(message))
+      return false;
+    if (!dynamixel_command_position_locked(
+        dynamixel_open_position_ticks_,
+        dynamixel_open_current_ma_,
+        true,
+        message))
+      return false;
+    if (has_aux_joint())
+    {
+      const size_t aux_idx = aux_joint_index();
+      if (aux_idx < hw_commands_.size())
+        hw_commands_[aux_idx] = aux_joint_max_;
+    }
+    message = "DYNAMIXEL gripper recovered and open command sent.";
+    return true;
+  }
+
   std::scoped_lock gk(gripper_mtx_);
   if (!gripper_send_single_control_locked(kGripperMcClearFault, message))
     return false;
@@ -2706,6 +3340,12 @@ bool MyArmHardware::gripper_clear_fault_and_open(std::string & message)
 
 bool MyArmHardware::gripper_save_parameters(std::string & message)
 {
+  if (gripper_backend_ == GripperBackend::DYNAMIXEL_XW430)
+  {
+    message = "DYNAMIXEL EEPROM protection settings persist immediately; no separate Flash save command is required.";
+    return true;
+  }
+
   std::scoped_lock gk(gripper_mtx_);
   if (!gripper_send_single_control_locked(kGripperMcSaveParameters, message))
     return false;
@@ -2755,6 +3395,12 @@ bool MyArmHardware::gripper_query_protection(
   GripperProtectionData & protection,
   std::string & message)
 {
+  if (gripper_backend_ == GripperBackend::DYNAMIXEL_XW430)
+  {
+    std::scoped_lock gk(gripper_mtx_);
+    return dynamixel_read_protection_locked(protection, message);
+  }
+
   std::scoped_lock gk(gripper_mtx_);
   uint16_t over_current = 0;
   uint16_t over_temp = 0;
@@ -2781,6 +3427,36 @@ bool MyArmHardware::gripper_set_protection(
   GripperProtectionData & applied,
   std::string & message)
 {
+  if (gripper_backend_ == GripperBackend::DYNAMIXEL_XW430)
+  {
+    (void)recovery_temperature_c;
+    (void)save_to_flash;
+    if (!std::isfinite(over_temperature_c))
+    {
+      message = "DYNAMIXEL temperature limit must be finite.";
+      return false;
+    }
+    if (over_current_ma < 0 ||
+        over_current_ma > static_cast<int>(std::lround(kDxlCurrentLimitMaxUnits * kDxlCurrentUnitMa)))
+    {
+      message = "DYNAMIXEL current limit is outside the XW430 control-table range.";
+      return false;
+    }
+    if (over_temperature_c < 0.0 || over_temperature_c > kDxlTemperatureLimitMaxC)
+    {
+      message = "DYNAMIXEL temperature limit must be within 0..100 C.";
+      return false;
+    }
+
+    std::scoped_lock gk(gripper_mtx_);
+    if (!dynamixel_write_protection_locked(over_current_ma, over_temperature_c, message))
+      return false;
+    if (!dynamixel_read_protection_locked(applied, message))
+      return false;
+    message += " Recovery temperature is not available on DYNAMIXEL.";
+    return true;
+  }
+
   if (!std::isfinite(over_temperature_c) || !std::isfinite(recovery_temperature_c))
   {
     message = "Temperature values must be finite.";

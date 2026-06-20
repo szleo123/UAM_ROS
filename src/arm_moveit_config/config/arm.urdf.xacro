@@ -4,9 +4,21 @@
     <xacro:arg name="use_fake_hardware" default="true" />
     <xacro:arg name="serial_port" default="/dev/ttyACM0" />
     <xacro:arg name="reader_port" default="/dev/ttyUSB5" />
+    <xacro:arg name="gripper_backend" default="linear_actuator" />
     <xacro:arg name="gripper_port" default="/dev/ttyUSB6" />
     <xacro:arg name="baudrate" default="230400" />
     <xacro:arg name="gripper_baudrate" default="115200" />
+    <xacro:arg name="dynamixel_id" default="1" />
+    <xacro:arg name="dynamixel_protocol_version" default="2.0" />
+    <xacro:arg name="dynamixel_open_position_ticks" default="2048" />
+    <xacro:arg name="dynamixel_close_position_ticks" default="2600" />
+    <xacro:arg name="dynamixel_goal_current_ma" default="150.0" />
+    <xacro:arg name="dynamixel_open_current_ma" default="150.0" />
+    <xacro:arg name="dynamixel_current_limit_ma" default="500.0" />
+    <xacro:arg name="dynamixel_temperature_limit_c" default="75.0" />
+    <xacro:arg name="dynamixel_bus_watchdog_ms" default="200" />
+    <xacro:arg name="dynamixel_configure_on_start" default="true" />
+    <xacro:arg name="dynamixel_apply_limits_on_start" default="false" />
     <xacro:arg name="position_scale" default="1000" />
     <xacro:arg name="arm_joint_signs" default="1,1,-1,1,1,1" />
     <xacro:arg name="arm_joint_offsets" default="0,0,0,0,0,0" />
@@ -87,9 +99,21 @@
       use_fake_hardware="$(arg use_fake_hardware)"
       serial_port="$(arg serial_port)"
       reader_port="$(arg reader_port)"
+      gripper_backend="$(arg gripper_backend)"
       gripper_port="$(arg gripper_port)"
       baudrate="$(arg baudrate)"
       gripper_baudrate="$(arg gripper_baudrate)"
+      dynamixel_id="$(arg dynamixel_id)"
+      dynamixel_protocol_version="$(arg dynamixel_protocol_version)"
+      dynamixel_open_position_ticks="$(arg dynamixel_open_position_ticks)"
+      dynamixel_close_position_ticks="$(arg dynamixel_close_position_ticks)"
+      dynamixel_goal_current_ma="$(arg dynamixel_goal_current_ma)"
+      dynamixel_open_current_ma="$(arg dynamixel_open_current_ma)"
+      dynamixel_current_limit_ma="$(arg dynamixel_current_limit_ma)"
+      dynamixel_temperature_limit_c="$(arg dynamixel_temperature_limit_c)"
+      dynamixel_bus_watchdog_ms="$(arg dynamixel_bus_watchdog_ms)"
+      dynamixel_configure_on_start="$(arg dynamixel_configure_on_start)"
+      dynamixel_apply_limits_on_start="$(arg dynamixel_apply_limits_on_start)"
       position_scale="$(arg position_scale)"
       arm_joint_signs="$(arg arm_joint_signs)"
       arm_joint_offsets="$(arg arm_joint_offsets)"

@@ -21,6 +21,7 @@
   <depend>action_msgs</depend>
   <depend>backward_ros</depend>
   <depend>control_msgs</depend>
+  <depend>dynamixel_sdk</depend>
   <depend>hardware_interface</depend>
   <depend>pluginlib</depend>
   <depend>rclpy</depend>

@@ -511,6 +511,8 @@ class HomingButtonApp:
         self.after_id = None
         self.last_gripper_poll_time = 0.0
         self.gripper_status_future = None
+        self.gripper_backend = "unknown"
+        self.gripper_recovery_available = True
         self.pending_futures = set()
 
         self.root = tk.Tk()
@@ -748,10 +750,15 @@ class HomingButtonApp:
             self.gripper_apply_button.configure(state=protection_write_state)
             self.gripper_current_entry.configure(state=protection_write_state)
             self.gripper_overtemp_entry.configure(state=protection_write_state)
-            self.gripper_recovery_entry.configure(state=protection_write_state)
+            self.gripper_recovery_entry.configure(
+                state=protection_write_state
+                if self.gripper_recovery_available
+                else tk.DISABLED
+            )
             self.gripper_save_button.configure(
                 state=tk.NORMAL
                 if self.node.ready_for_gripper_save_parameters()
+                and self.gripper_backend != "dynamixel_xw430"
                 else tk.DISABLED
             )
         self.after_id = self.root.after(50, self.tick)
@@ -788,6 +795,7 @@ class HomingButtonApp:
             if not response.success:
                 self.node.gripper_status_text = f"Gripper: {response.message}"
                 return
+            self.gripper_backend = response.backend
             faults = []
             if response.stall_protection:
                 faults.append("stall")
@@ -799,7 +807,7 @@ class HomingButtonApp:
                 faults.append("motor abnormal")
             fault_text = ", ".join(faults) if faults else "none"
             self.node.gripper_status_text = (
-                f"Position {response.position:.3f} "
+                f"{response.backend}: position {response.position:.3f} "
                 f"({response.position_units} units), "
                 f"target {response.target_units} units\n"
                 f"Current {response.current_ma} mA, "
@@ -903,9 +911,22 @@ class HomingButtonApp:
             if not response.success:
                 messagebox.showwarning("Gripper Protection", response.message)
                 return
+            self.gripper_recovery_available = bool(
+                response.recovery_temperature_available
+            )
+            self.gripper_backend = response.backend
+            if self.gripper_backend == "dynamixel_xw430":
+                self.gripper_apply_button_var.set("Apply Protection to EEPROM")
+                self.gripper_save_button_var.set("No Flash Save Needed")
+            else:
+                self.gripper_apply_button_var.set("Apply Protection to RAM")
+                self.gripper_save_button_var.set("Save Protection to Flash")
             self.gripper_current_var.set(str(response.over_current_ma))
             self.gripper_overtemp_var.set(f"{response.over_temperature_c:.1f}")
-            self.gripper_recovery_var.set(f"{response.recovery_temperature_c:.1f}")
+            if self.gripper_recovery_available:
+                self.gripper_recovery_var.set(f"{response.recovery_temperature_c:.1f}")
+            else:
+                self.gripper_recovery_var.set("N/A")
         except Exception as exc:
             msg = f"Failed to read gripper protection parameters: {exc}"
             self.node.status = msg
@@ -919,18 +940,30 @@ class HomingButtonApp:
         try:
             over_current_ma = int(self.gripper_current_var.get().strip())
             over_temperature_c = float(self.gripper_overtemp_var.get().strip())
-            recovery_temperature_c = float(self.gripper_recovery_var.get().strip())
+            recovery_temperature_c = (
+                float(self.gripper_recovery_var.get().strip())
+                if self.gripper_recovery_available
+                else 0.0
+            )
         except ValueError as exc:
             messagebox.showerror("Gripper Protection", f"Invalid protection value: {exc}")
             return
 
-        target = "RAM and Flash" if save_to_flash else "RAM"
+        target = (
+            "EEPROM"
+            if self.gripper_backend == "dynamixel_xw430"
+            else ("RAM and Flash" if save_to_flash else "RAM")
+        )
         if not messagebox.askyesno(
             "Gripper Protection",
             f"Apply gripper protection settings to {target}?\n\n"
             f"Over-current: {over_current_ma} mA\n"
             f"Over-temp: {over_temperature_c:.1f} C\n"
-            f"Recovery: {recovery_temperature_c:.1f} C",
+            + (
+                f"Recovery: {recovery_temperature_c:.1f} C"
+                if self.gripper_recovery_available
+                else "Recovery: N/A for this backend"
+            ),
         ):
             return
 
@@ -957,13 +990,20 @@ class HomingButtonApp:
                 return
             self.gripper_current_var.set(str(response.applied_over_current_ma))
             self.gripper_overtemp_var.set(f"{response.applied_over_temperature_c:.1f}")
-            self.gripper_recovery_var.set(f"{response.applied_recovery_temperature_c:.1f}")
+            if self.gripper_recovery_available:
+                self.gripper_recovery_var.set(f"{response.applied_recovery_temperature_c:.1f}")
+            else:
+                self.gripper_recovery_var.set("N/A")
         except Exception as exc:
             msg = f"Failed to apply gripper protection parameters: {exc}"
             self.node.status = msg
             messagebox.showerror("Gripper Protection", msg)
         finally:
-            self.gripper_apply_button_var.set("Apply Protection to RAM")
+            self.gripper_apply_button_var.set(
+                "Apply Protection to EEPROM"
+                if self.gripper_backend == "dynamixel_xw430"
+                else "Apply Protection to RAM"
+            )
 
     def on_gripper_save_parameters_clicked(self):
         if self.closed or self.shutdown_requested:
