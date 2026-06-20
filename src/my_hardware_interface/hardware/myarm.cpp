@@ -35,6 +35,9 @@
 #endif
 #include "pluginlib/class_list_macros.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
+#include "my_arm_hardware/srv/get_gripper_protection.hpp"
+#include "my_arm_hardware/srv/gripper_status.hpp"
+#include "my_arm_hardware/srv/set_gripper_protection.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/float64_multi_array.hpp"
@@ -77,11 +80,34 @@ constexpr const char * kHomingInitService = "/arm_homing/start_initialization";
 constexpr const char * kHomingInitTopic = "/arm_homing/start_initialization";
 constexpr const char * kHomingConfirmService = "/arm_homing/confirm_drop_pose";
 constexpr const char * kHomingConfirmTopic = "/arm_homing/reached_drop_pose";
+constexpr const char * kGripperStatusService = "/gripper/query_status";
+constexpr const char * kGripperGetProtectionService = "/gripper/get_protection";
+constexpr const char * kGripperSetProtectionService = "/gripper/set_protection";
+constexpr const char * kGripperClearFaultService = "/gripper/clear_fault";
+constexpr const char * kGripperClearFaultOpenService = "/gripper/clear_fault_and_open";
+constexpr const char * kGripperSaveParametersService = "/gripper/save_parameters";
 constexpr const char * kStm32MitGainsCommandTopic = "/my_arm_system/stm32_mit_gains_cmd";
 constexpr const char * kStm32MitGainsCurrentTopic = "/my_arm_system/stm32_mit_gains_current";
 constexpr const char * kStm32ControlModeTopic = "/my_arm_system/stm32_control_mode";
 constexpr double kStm32MaxLiveKp = 1000.0;
 constexpr double kStm32MaxLiveKd = 100.0;
+constexpr uint8_t kGripperCmdRead = 0x01;
+constexpr uint8_t kGripperCmdWrite = 0x02;
+constexpr uint8_t kGripperCmdMotionFeedback = 0x21;
+constexpr uint8_t kGripperCmdSingleControl = 0x04;
+constexpr uint8_t kGripperIndexTargetPosition = 0x37;
+constexpr uint8_t kGripperIndexOverCurrent = 0x20;
+constexpr uint8_t kGripperIndexOverTemperature = 0x62;
+constexpr uint8_t kGripperIndexRecoveryTemperature = 0x64;
+constexpr uint8_t kGripperMcWork = 0x04;
+constexpr uint8_t kGripperMcSaveParameters = 0x20;
+constexpr uint8_t kGripperMcQueryStatus = 0x22;
+constexpr uint8_t kGripperMcClearFault = 0x1E;
+constexpr int kGripperOverCurrentMinMa = 300;
+constexpr int kGripperOverCurrentMaxMa = 1500;
+constexpr double kGripperOverTemperatureMaxC = 80.0;
+constexpr double kGripperRecoveryTemperatureMinC = 20.0;
+constexpr double kGripperTemperatureMinGapC = 5.0;
 
 double safe_period_seconds(const rclcpp::Duration & period)
 {
@@ -278,53 +304,138 @@ static inline uint8_t gripper_checksum(const std::vector<uint8_t>& f, size_t sta
 
 // Build "positioning with feedback" frame: 55 AA 04 [ID] 21 37 [lo] [hi] [chk]
 static inline std::vector<uint8_t> gripper_pack_target(uint8_t id, uint16_t target_units) {
-  std::vector<uint8_t> f{0x55,0xAA,0x04,id,0x21,0x37,
+  std::vector<uint8_t> f{0x55,0xAA,0x04,id,kGripperCmdMotionFeedback,kGripperIndexTargetPosition,
                          static_cast<uint8_t>(target_units & 0xFF),
                          static_cast<uint8_t>((target_units >> 8) & 0xFF)};
   f.push_back(gripper_checksum(f));
   return f;
 }
 
+static inline std::vector<uint8_t> gripper_pack_single_control(uint8_t id, uint8_t command) {
+  std::vector<uint8_t> f{0x55, 0xAA, 0x03, id, kGripperCmdSingleControl, 0x00, command};
+  f.push_back(gripper_checksum(f));
+  return f;
+}
+
+static inline std::vector<uint8_t> gripper_pack_read(uint8_t id, uint8_t index, uint8_t count) {
+  std::vector<uint8_t> f{0x55, 0xAA, 0x03, id, kGripperCmdRead, index, count};
+  f.push_back(gripper_checksum(f));
+  return f;
+}
+
+static inline std::vector<uint8_t> gripper_pack_write_u16(uint8_t id, uint8_t index, uint16_t value) {
+  std::vector<uint8_t> f{0x55, 0xAA, 0x04, id, kGripperCmdWrite, index,
+                         static_cast<uint8_t>(value & 0xFF),
+                         static_cast<uint8_t>((value >> 8) & 0xFF)};
+  f.push_back(gripper_checksum(f));
+  return f;
+}
+
+static inline bool gripper_try_extract_frame(
+  std::vector<uint8_t>& buf,
+  std::vector<uint8_t>& frame)
+{
+  size_t i = 0;
+  while (i + 3 < buf.size()) {
+    if (buf[i] == 0xAA && buf[i + 1] == 0x55)
+    {
+      const uint8_t len = buf[i + 2];
+      const size_t frame_len = 2 + 1 + (static_cast<size_t>(len) + 1) + 1;
+      if (frame_len > kGripperMaxFrameLength) {
+        ++i;
+        continue;
+      }
+      if (i + frame_len > buf.size()) {
+        break;
+      }
+      uint32_t s = 0;
+      for (size_t k = i + 2; k < i + frame_len - 1; ++k) {
+        s += buf[k];
+      }
+      const uint8_t chk = buf[i + frame_len - 1];
+      if (chk != static_cast<uint8_t>(s & 0xFF)) {
+        ++i;
+        continue;
+      }
+      frame.assign(buf.begin() + static_cast<long>(i), buf.begin() + static_cast<long>(i + frame_len));
+      buf.erase(buf.begin(), buf.begin() + static_cast<long>(i + frame_len));
+      return true;
+    }
+    ++i;
+  }
+  if (i > 0) {
+    buf.erase(buf.begin(), buf.begin() + static_cast<long>(i));
+  }
+  if (buf.size() > kGripperMaxRxBufferLength) {
+    buf.erase(buf.begin(), buf.end() - static_cast<long>(kGripperMaxRxBufferLength));
+  }
+  return false;
+}
+
+static inline bool gripper_parse_status_frame(
+  const std::vector<uint8_t>& frame,
+  my_arm_hardware::MyArmHardware::GripperStatusData& status)
+{
+  if (frame.size() < 22 || frame[0] != 0xAA || frame[1] != 0x55) {
+    return false;
+  }
+
+  status.valid = true;
+  status.target_units = static_cast<int>(
+    static_cast<uint16_t>(frame[7]) | (static_cast<uint16_t>(frame[8]) << 8));
+  status.position_units = static_cast<int>(
+    static_cast<int16_t>(static_cast<uint16_t>(frame[9]) | (static_cast<uint16_t>(frame[10]) << 8)));
+  status.temperature_c = static_cast<double>(static_cast<int8_t>(frame[11]));
+  status.current_ma = static_cast<int>(
+    static_cast<uint16_t>(frame[12]) | (static_cast<uint16_t>(frame[13]) << 8));
+  status.error_flags = frame[20];
+  return true;
+}
+
+static inline bool gripper_parse_u16_read_frame(
+  const std::vector<uint8_t>& frame,
+  uint8_t expected_index,
+  uint16_t& value)
+{
+  if (frame.size() < 9 || frame[0] != 0xAA || frame[1] != 0x55) {
+    return false;
+  }
+  if (frame[4] != kGripperCmdRead || frame[5] != expected_index) {
+    return false;
+  }
+  value = static_cast<uint16_t>(frame[6]) | (static_cast<uint16_t>(frame[7]) << 8);
+  return true;
+}
+
+static inline std::string gripper_fault_text(uint8_t flags)
+{
+  std::vector<std::string> names;
+  if ((flags & 0x01) != 0) names.emplace_back("stall/block");
+  if ((flags & 0x02) != 0) names.emplace_back("over-temperature");
+  if ((flags & 0x04) != 0) names.emplace_back("over-current");
+  if ((flags & 0x08) != 0) names.emplace_back("motor abnormal");
+  if (names.empty()) {
+    return "none";
+  }
+  std::ostringstream ss;
+  for (size_t i = 0; i < names.size(); ++i) {
+    if (i > 0) ss << ", ";
+    ss << names[i];
+  }
+  return ss.str();
+}
 
 /* RX parser: look for AA 55 ... reply that contains current position.
    We check header, length, checksum, and read current position from payload.
    Adjust the offsets if your device's state frame differs. */
 static inline bool gripper_try_parse_state(std::vector<uint8_t>& buf, int16_t& current_units) {
-  size_t i = 0;
-  while (i + 3 < buf.size()) {
-    if (buf[i] == 0xAA && buf[i + 1] == 0x55)
-    {
-      const uint8_t len = buf[i + 2];                       // payload count after [len]
-      const size_t frame_len = 2 + 1 + (len + 1) + 1;       // hdr(2)+len(1)+[ID..payload..](len+1)+chk(1)
-
-      if (frame_len < kGripperMinStateFrameLength || frame_len > kGripperMaxFrameLength) {
-        ++i;
-        continue;
-      }
-
-      if (i + frame_len > buf.size()) {
-        break;
-      }
-
-      // checksum over bytes starting at [len]
-      uint32_t s = 0; for (size_t k = i + 2; k < i + frame_len - 1; ++k) s += buf[k];
-      uint8_t chk = buf[i + frame_len - 1];
-      if (chk != static_cast<uint8_t>(s & 0xFF)) { ++i; continue; }
-      if (buf[i + 4] != 0x21 || buf[i + 5] != 0x37) { ++i; continue; } // not a state frame
-
-      current_units = static_cast<int16_t>(buf[i + 9] | (buf[i + 10] << 8));
-      buf.erase(buf.begin()+static_cast<long>(i), buf.begin()+static_cast<long>(i + frame_len));
+  std::vector<uint8_t> frame;
+  while (gripper_try_extract_frame(buf, frame)) {
+    my_arm_hardware::MyArmHardware::GripperStatusData status;
+    if (gripper_parse_status_frame(frame, status)) {
+      current_units = static_cast<int16_t>(status.position_units);
       return true;
     }
-    
-
-    // Not a state frame we need; drop one byte and resync
-    ++i;
-  }
-  // drop consumed prefix
-  if (i > 0) buf.erase(buf.begin(), buf.begin()+static_cast<long>(i));
-  if (buf.size() > kGripperMaxRxBufferLength) {
-    buf.erase(buf.begin(), buf.end() - static_cast<long>(kGripperMaxRxBufferLength));
   }
   return false;
 }
@@ -940,20 +1051,26 @@ hardware_interface::return_type MyArmHardware::read(
         gripper_.ReadByte(c, 0);
         gripper_rx_.push_back(static_cast<uint8_t>(c));
       }
-      // parse all complete state frames
-      int16_t cur_units = 0;
-      if (gripper_try_parse_state(gripper_rx_, cur_units)) {
-        double ros_pos = units_to_grip(cur_units);
+      std::vector<uint8_t> frame;
+      while (gripper_try_extract_frame(gripper_rx_, frame)) {
+        GripperStatusData status;
+        if (!gripper_parse_status_frame(frame, status)) {
+          continue;
+        }
+
+        status.position = units_to_grip(status.position_units);
+        update_gripper_status_from_frame(frame);
         if (has_aux_joint()) {
           const size_t aux_idx = aux_joint_index();
           double prev = hw_states_[aux_idx];
-          hw_states_[aux_idx] = ros_pos;
+          hw_states_[aux_idx] = status.position;
           hw_velocities_[aux_idx] = (hw_states_[aux_idx] - prev) / safe_period_seconds(period);
           hw_efforts_[aux_idx] = 0.0;
         }
-        // (Optional)
         RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 2000,
-          "Gripper read: units %d -> ROS %.3f", (int)cur_units, ros_pos);
+          "Gripper read: units %d -> ROS %.3f, current=%dmA, temp=%.0fC, faults=%s",
+          status.position_units, status.position, status.current_ma,
+          status.temperature_c, gripper_fault_text(status.error_flags).c_str());
       }
 
     } catch (const std::exception& e) {
@@ -2112,6 +2229,100 @@ void MyArmHardware::setup_homing_interface()
       response->message = message;
     });
 
+  gripper_status_srv_ = homing_node_->create_service<my_arm_hardware::srv::GripperStatus>(
+    kGripperStatusService,
+    [this](
+      const std::shared_ptr<my_arm_hardware::srv::GripperStatus::Request> /*request*/,
+      std::shared_ptr<my_arm_hardware::srv::GripperStatus::Response> response)
+    {
+      GripperStatusData status;
+      std::string message;
+      response->success = gripper_query_status(status, message);
+      response->message = message;
+      response->connected = gripper_ok_;
+      response->target_units = status.target_units;
+      response->position_units = status.position_units;
+      response->position = status.position;
+      response->current_ma = status.current_ma;
+      response->temperature_c = status.temperature_c;
+      response->error_flags = status.error_flags;
+      response->stall_protection = (status.error_flags & 0x01) != 0;
+      response->over_temperature = (status.error_flags & 0x02) != 0;
+      response->over_current = (status.error_flags & 0x04) != 0;
+      response->motor_abnormal = (status.error_flags & 0x08) != 0;
+    });
+
+  gripper_protection_get_srv_ =
+    homing_node_->create_service<my_arm_hardware::srv::GetGripperProtection>(
+      kGripperGetProtectionService,
+      [this](
+        const std::shared_ptr<my_arm_hardware::srv::GetGripperProtection::Request> /*request*/,
+        std::shared_ptr<my_arm_hardware::srv::GetGripperProtection::Response> response)
+      {
+        GripperProtectionData protection;
+        std::string message;
+        response->success = gripper_query_protection(protection, message);
+        response->message = message;
+        response->over_current_ma = protection.over_current_ma;
+        response->over_temperature_c = protection.over_temperature_c;
+        response->recovery_temperature_c = protection.recovery_temperature_c;
+      });
+
+  gripper_protection_set_srv_ =
+    homing_node_->create_service<my_arm_hardware::srv::SetGripperProtection>(
+      kGripperSetProtectionService,
+      [this](
+        const std::shared_ptr<my_arm_hardware::srv::SetGripperProtection::Request> request,
+        std::shared_ptr<my_arm_hardware::srv::SetGripperProtection::Response> response)
+      {
+        GripperProtectionData applied;
+        std::string message;
+        response->success = gripper_set_protection(
+          request->over_current_ma,
+          request->over_temperature_c,
+          request->recovery_temperature_c,
+          request->save_to_flash,
+          applied,
+          message);
+        response->message = message;
+        response->applied_over_current_ma = applied.over_current_ma;
+        response->applied_over_temperature_c = applied.over_temperature_c;
+        response->applied_recovery_temperature_c = applied.recovery_temperature_c;
+      });
+
+  gripper_clear_fault_srv_ = homing_node_->create_service<std_srvs::srv::Trigger>(
+    kGripperClearFaultService,
+    [this](
+      const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+      std::string message;
+      response->success = gripper_clear_fault(message);
+      response->message = message;
+    });
+
+  gripper_clear_fault_open_srv_ = homing_node_->create_service<std_srvs::srv::Trigger>(
+    kGripperClearFaultOpenService,
+    [this](
+      const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+      std::string message;
+      response->success = gripper_clear_fault_and_open(message);
+      response->message = message;
+    });
+
+  gripper_save_parameters_srv_ = homing_node_->create_service<std_srvs::srv::Trigger>(
+    kGripperSaveParametersService,
+    [this](
+      const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+      std::string message;
+      response->success = gripper_save_parameters(message);
+      response->message = message;
+    });
+
   homing_init_sub_ = homing_node_->create_subscription<std_msgs::msg::Empty>(
     kHomingInitTopic,
     rclcpp::QoS(1),
@@ -2155,6 +2366,12 @@ void MyArmHardware::teardown_homing_interface()
     homing_executor_->remove_node(homing_node_);
   homing_init_srv_.reset();
   homing_confirm_srv_.reset();
+  gripper_status_srv_.reset();
+  gripper_protection_get_srv_.reset();
+  gripper_protection_set_srv_.reset();
+  gripper_clear_fault_srv_.reset();
+  gripper_clear_fault_open_srv_.reset();
+  gripper_save_parameters_srv_.reset();
   homing_init_sub_.reset();
   homing_drop_pose_sub_.reset();
   homing_status_pub_.reset();
@@ -2340,6 +2557,282 @@ bool MyArmHardware::send_system_command(uint8_t command_code, std::string & fail
     serial_ok_ = false;
     return false;
   }
+}
+
+bool MyArmHardware::gripper_send_frame_locked(
+  const std::vector<uint8_t> & frame,
+  std::string & message)
+{
+  if (!gripper_ok_ || !gripper_.IsOpen())
+  {
+    message = "Gripper serial port is not available.";
+    return false;
+  }
+
+  try
+  {
+    gripper_.Write(frame);
+    gripper_.DrainWriteBuffer();
+    return true;
+  }
+  catch (const std::exception & e)
+  {
+    gripper_ok_ = false;
+    message = std::string("Failed to write gripper frame: ") + e.what();
+    return false;
+  }
+}
+
+bool MyArmHardware::gripper_read_frame_locked(
+  std::vector<uint8_t> & frame,
+  std::chrono::milliseconds timeout,
+  std::string & message)
+{
+  const auto start = std::chrono::steady_clock::now();
+  while (std::chrono::steady_clock::now() - start < timeout)
+  {
+    try
+    {
+      char c = 0;
+      while (gripper_.IsDataAvailable())
+      {
+        gripper_.ReadByte(c, 0);
+        gripper_rx_.push_back(static_cast<uint8_t>(c));
+      }
+    }
+    catch (const std::exception & e)
+    {
+      gripper_ok_ = false;
+      message = std::string("Failed to read gripper frame: ") + e.what();
+      return false;
+    }
+
+    if (gripper_try_extract_frame(gripper_rx_, frame))
+    {
+      update_gripper_status_from_frame(frame);
+      return true;
+    }
+    rclcpp::sleep_for(std::chrono::milliseconds(2));
+  }
+
+  message = "Timed out waiting for gripper response.";
+  return false;
+}
+
+bool MyArmHardware::gripper_send_single_control_locked(uint8_t command, std::string & message)
+{
+  const auto frame = gripper_pack_single_control(gripper_id_, command);
+  if (!gripper_send_frame_locked(frame, message))
+    return false;
+
+  std::vector<uint8_t> response;
+  if (!gripper_read_frame_locked(response, std::chrono::milliseconds(250), message))
+    return false;
+  return true;
+}
+
+void MyArmHardware::update_gripper_status_from_frame(const std::vector<uint8_t> & frame)
+{
+  GripperStatusData status;
+  if (!gripper_parse_status_frame(frame, status))
+    return;
+  status.position = units_to_grip(status.position_units);
+  std::lock_guard<std::mutex> lock(gripper_status_mtx_);
+  last_gripper_status_ = status;
+}
+
+bool MyArmHardware::gripper_query_status(GripperStatusData & status, std::string & message)
+{
+  std::scoped_lock gk(gripper_mtx_);
+  const auto frame = gripper_pack_single_control(gripper_id_, kGripperMcQueryStatus);
+  if (!gripper_send_frame_locked(frame, message))
+    return false;
+
+  const auto start = std::chrono::steady_clock::now();
+  while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(300))
+  {
+    std::vector<uint8_t> response;
+    if (!gripper_read_frame_locked(response, std::chrono::milliseconds(60), message))
+      continue;
+    if (gripper_parse_status_frame(response, status))
+    {
+      status.position = units_to_grip(status.position_units);
+      {
+        std::lock_guard<std::mutex> lock(gripper_status_mtx_);
+        last_gripper_status_ = status;
+      }
+      message = "Gripper status received.";
+      return true;
+    }
+  }
+
+  message = "Timed out waiting for gripper status response.";
+  return false;
+}
+
+bool MyArmHardware::gripper_clear_fault(std::string & message)
+{
+  std::scoped_lock gk(gripper_mtx_);
+  if (!gripper_send_single_control_locked(kGripperMcClearFault, message))
+    return false;
+  message = "Gripper clear-fault command sent.";
+  return true;
+}
+
+bool MyArmHardware::gripper_clear_fault_and_open(std::string & message)
+{
+  std::scoped_lock gk(gripper_mtx_);
+  if (!gripper_send_single_control_locked(kGripperMcClearFault, message))
+    return false;
+  if (!gripper_send_single_control_locked(kGripperMcWork, message))
+    return false;
+
+  const auto target = grip_to_units(0.0);
+  auto frame = gripper_pack_target(gripper_id_, target);
+  if (!gripper_send_frame_locked(frame, message))
+    return false;
+
+  std::vector<uint8_t> response;
+  (void)gripper_read_frame_locked(response, std::chrono::milliseconds(250), message);
+  if (has_aux_joint())
+  {
+    const size_t aux_idx = aux_joint_index();
+    if (aux_idx < hw_commands_.size())
+      hw_commands_[aux_idx] = 0.0;
+  }
+  message = "Gripper fault cleared, work enabled, and open command sent.";
+  return true;
+}
+
+bool MyArmHardware::gripper_save_parameters(std::string & message)
+{
+  std::scoped_lock gk(gripper_mtx_);
+  if (!gripper_send_single_control_locked(kGripperMcSaveParameters, message))
+    return false;
+  message = "Gripper parameters saved to actuator Flash.";
+  return true;
+}
+
+bool MyArmHardware::gripper_read_u16_register_locked(
+  uint8_t address,
+  uint16_t & value,
+  std::string & message)
+{
+  const auto frame = gripper_pack_read(gripper_id_, address, 2);
+  if (!gripper_send_frame_locked(frame, message))
+    return false;
+
+  const auto start = std::chrono::steady_clock::now();
+  while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(300))
+  {
+    std::vector<uint8_t> response;
+    if (!gripper_read_frame_locked(response, std::chrono::milliseconds(60), message))
+      continue;
+    if (gripper_parse_u16_read_frame(response, address, value))
+      return true;
+  }
+
+  message = "Timed out waiting for gripper register read response.";
+  return false;
+}
+
+bool MyArmHardware::gripper_write_u16_register_locked(
+  uint8_t address,
+  uint16_t value,
+  std::string & message)
+{
+  const auto frame = gripper_pack_write_u16(gripper_id_, address, value);
+  if (!gripper_send_frame_locked(frame, message))
+    return false;
+
+  std::vector<uint8_t> response;
+  if (!gripper_read_frame_locked(response, std::chrono::milliseconds(250), message))
+    return false;
+  return true;
+}
+
+bool MyArmHardware::gripper_query_protection(
+  GripperProtectionData & protection,
+  std::string & message)
+{
+  std::scoped_lock gk(gripper_mtx_);
+  uint16_t over_current = 0;
+  uint16_t over_temp = 0;
+  uint16_t recovery_temp = 0;
+  if (!gripper_read_u16_register_locked(kGripperIndexOverCurrent, over_current, message))
+    return false;
+  if (!gripper_read_u16_register_locked(kGripperIndexOverTemperature, over_temp, message))
+    return false;
+  if (!gripper_read_u16_register_locked(kGripperIndexRecoveryTemperature, recovery_temp, message))
+    return false;
+
+  protection.over_current_ma = static_cast<int>(over_current);
+  protection.over_temperature_c = static_cast<double>(over_temp) / 10.0;
+  protection.recovery_temperature_c = static_cast<double>(recovery_temp) / 10.0;
+  message = "Gripper protection parameters received.";
+  return true;
+}
+
+bool MyArmHardware::gripper_set_protection(
+  int over_current_ma,
+  double over_temperature_c,
+  double recovery_temperature_c,
+  bool save_to_flash,
+  GripperProtectionData & applied,
+  std::string & message)
+{
+  if (!std::isfinite(over_temperature_c) || !std::isfinite(recovery_temperature_c))
+  {
+    message = "Temperature values must be finite.";
+    return false;
+  }
+  if (over_current_ma < kGripperOverCurrentMinMa || over_current_ma > kGripperOverCurrentMaxMa)
+  {
+    message = "Over-current limit must be within 300..1500 mA.";
+    return false;
+  }
+  if (over_temperature_c > kGripperOverTemperatureMaxC)
+  {
+    message = "Over-temperature limit must be <= 80 C.";
+    return false;
+  }
+  if (recovery_temperature_c < kGripperRecoveryTemperatureMinC)
+  {
+    message = "Recovery temperature must be >= 20 C.";
+    return false;
+  }
+  if (over_temperature_c < recovery_temperature_c + kGripperTemperatureMinGapC)
+  {
+    message = "Over-temperature limit must be at least 5 C above recovery temperature.";
+    return false;
+  }
+
+  const auto current_value = static_cast<uint16_t>(over_current_ma);
+  const auto over_temp_value = static_cast<uint16_t>(std::lround(over_temperature_c * 10.0));
+  const auto recovery_temp_value = static_cast<uint16_t>(std::lround(recovery_temperature_c * 10.0));
+
+  std::scoped_lock gk(gripper_mtx_);
+  if (!gripper_write_u16_register_locked(kGripperIndexOverCurrent, current_value, message))
+    return false;
+  if (!gripper_write_u16_register_locked(kGripperIndexOverTemperature, over_temp_value, message))
+    return false;
+  if (!gripper_write_u16_register_locked(kGripperIndexRecoveryTemperature, recovery_temp_value, message))
+    return false;
+  if (save_to_flash && !gripper_send_single_control_locked(kGripperMcSaveParameters, message))
+    return false;
+
+  applied.over_current_ma = over_current_ma;
+  applied.over_temperature_c = static_cast<double>(over_temp_value) / 10.0;
+  applied.recovery_temperature_c = static_cast<double>(recovery_temp_value) / 10.0;
+
+  std::ostringstream ss;
+  ss << "Gripper protection parameters applied to RAM"
+     << (save_to_flash ? " and saved to Flash" : "")
+     << ": over-current=" << applied.over_current_ma << "mA, over-temp="
+     << applied.over_temperature_c << "C, recovery="
+     << applied.recovery_temperature_c << "C.";
+  message = ss.str();
+  return true;
 }
 
 bool MyArmHardware::start_damiao_initialization(const std::string & source, std::string & message)

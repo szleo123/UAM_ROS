@@ -116,6 +116,10 @@ UI_ARGUMENT_NAMES = [
     "emergency_gripper_open_position",
     "emergency_gripper_max_effort",
     "emergency_gripper_cancel_before_open",
+    "enable_gripper_maintenance_ui",
+    "enable_gripper_parameter_writes",
+    "enable_gripper_flash_save",
+    "gripper_status_poll_s",
     "start_mit_gain_tuner",
     "mit_gain_tuner_kp_max",
     "mit_gain_tuner_kd_max",
@@ -644,6 +648,26 @@ def common_bringup_launch_arguments(
             "emergency_gripper_cancel_before_open",
             default_value="true",
             description="Cancel current gripper action goals before sending emergency open.",
+        ),
+        DeclareLaunchArgument(
+            "enable_gripper_maintenance_ui",
+            default_value="true",
+            description="Add gripper status, recovery, and protection controls to the homing/operator UI.",
+        ),
+        DeclareLaunchArgument(
+            "enable_gripper_parameter_writes",
+            default_value="false",
+            description="Allow the homing/operator UI to write gripper protection parameters to RAM.",
+        ),
+        DeclareLaunchArgument(
+            "enable_gripper_flash_save",
+            default_value="false",
+            description="Allow the homing/operator UI to save current gripper parameters to actuator Flash.",
+        ),
+        DeclareLaunchArgument(
+            "gripper_status_poll_s",
+            default_value="1.0",
+            description="Polling period for gripper status in the homing/operator UI.",
         ),
         DeclareLaunchArgument(
             "start_mit_gain_tuner",

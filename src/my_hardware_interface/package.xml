@@ -16,6 +16,7 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>pkg-config</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
 
   <depend>action_msgs</depend>
   <depend>backward_ros</depend>
@@ -25,6 +26,7 @@
   <depend>rclpy</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_lifecycle</depend>
+  <depend>rosidl_default_runtime</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
@@ -55,6 +57,8 @@
   <test_depend>launch_testing_ros</test_depend>
   <test_depend>liburdfdom-tools</test_depend>
   <test_depend>xacro</test_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(my_arm_hardware LANGUAGES CXX)
+project(my_arm_hardware LANGUAGES C CXX)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "(GNU|Clang)")
   add_compile_options(-Wall -Wextra)
@@ -14,6 +14,7 @@ set(THIS_PACKAGE_INCLUDE_DEPENDS
   pluginlib
   rclcpp
   rclcpp_lifecycle
+  rosidl_default_runtime
   std_msgs
   std_srvs
 )
@@ -21,6 +22,7 @@ set(THIS_PACKAGE_INCLUDE_DEPENDS
 # find dependencies
 find_package(backward_ros REQUIRED)
 find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 foreach(Dependency IN ITEMS ${THIS_PACKAGE_INCLUDE_DEPENDS})
   find_package(${Dependency} REQUIRED)
 endforeach()
@@ -37,28 +39,29 @@ endif()
 
 ## COMPILE
 add_library(
-  my_arm_hardware
+  my_arm_hardware_plugin
   SHARED
   hardware/myarm.cpp
 )
-target_compile_features(my_arm_hardware PUBLIC cxx_std_17)
-target_include_directories(my_arm_hardware PUBLIC
+set_target_properties(my_arm_hardware_plugin PROPERTIES OUTPUT_NAME my_arm_hardware)
+target_compile_features(my_arm_hardware_plugin PUBLIC cxx_std_17)
+target_include_directories(my_arm_hardware_plugin PUBLIC
 $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/hardware/include>
 $<INSTALL_INTERFACE:include/my_arm_hardware>
 ${LIBSERIAL_INCLUDE_DIRS}
 )
 
-target_link_libraries(my_arm_hardware PUBLIC
+target_link_libraries(my_arm_hardware_plugin PUBLIC
   ${LIBSERIAL_LIBRARIES}
 )
 
 if(MY_ARM_HARDWARE_ENABLE_INTERNAL_PINOCCHIO AND pinocchio_FOUND)
-  target_compile_definitions(my_arm_hardware PUBLIC MY_ARM_HARDWARE_HAS_PINOCCHIO)
+  target_compile_definitions(my_arm_hardware_plugin PUBLIC MY_ARM_HARDWARE_HAS_PINOCCHIO)
   if(TARGET pinocchio::pinocchio)
-    target_link_libraries(my_arm_hardware PUBLIC pinocchio::pinocchio)
+    target_link_libraries(my_arm_hardware_plugin PUBLIC pinocchio::pinocchio)
   else()
-    target_include_directories(my_arm_hardware PUBLIC ${pinocchio_INCLUDE_DIRS})
-    target_link_libraries(my_arm_hardware PUBLIC ${pinocchio_LIBRARIES})
+    target_include_directories(my_arm_hardware_plugin PUBLIC ${pinocchio_INCLUDE_DIRS})
+    target_link_libraries(my_arm_hardware_plugin PUBLIC ${pinocchio_LIBRARIES})
   endif()
   message(STATUS "Pinocchio found: enabling dynamics feedforward support in my_arm_hardware")
 elseif(MY_ARM_HARDWARE_ENABLE_INTERNAL_PINOCCHIO)
@@ -67,12 +70,23 @@ else()
   message(STATUS "Internal Pinocchio dynamics disabled; hardware feedforward can use the dynamics_monitor torque topic")
 endif()
 
-target_compile_options(my_arm_hardware PRIVATE
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/GripperStatus.srv"
+  "srv/GetGripperProtection.srv"
+  "srv/SetGripperProtection.srv"
+)
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+
+target_compile_options(my_arm_hardware_plugin PRIVATE
   ${LIBSERIAL_CFLAGS_OTHER}
 )
 
+target_link_libraries(my_arm_hardware_plugin PUBLIC
+  ${cpp_typesupport_target}
+)
+
 ament_target_dependencies(
-  my_arm_hardware PUBLIC
+  my_arm_hardware_plugin PUBLIC
   ${THIS_PACKAGE_INCLUDE_DEPENDS}
 )
 
@@ -103,7 +117,7 @@ install(
     scripts/arm_emergency_stop.py
   DESTINATION lib/${PROJECT_NAME}
 )
-install(TARGETS my_arm_hardware
+install(TARGETS my_arm_hardware_plugin
   EXPORT export_my_arm_hardware
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -113,4 +127,5 @@ install(TARGETS my_arm_hardware
 ## EXPORTS
 ament_export_targets(export_my_arm_hardware HAS_LIBRARY_TARGET)
 ament_export_dependencies(${THIS_PACKAGE_INCLUDE_DEPENDS})
+ament_export_dependencies(rosidl_default_runtime)
 ament_package()

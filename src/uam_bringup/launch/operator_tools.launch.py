@@ -105,6 +105,16 @@ def generate_launch_description():
                 "gripper_cancel_before_open": LaunchConfiguration(
                     "emergency_gripper_cancel_before_open"
                 ),
+                "enable_gripper_maintenance_ui": LaunchConfiguration(
+                    "enable_gripper_maintenance_ui"
+                ),
+                "enable_gripper_parameter_writes": LaunchConfiguration(
+                    "enable_gripper_parameter_writes"
+                ),
+                "enable_gripper_flash_save": LaunchConfiguration(
+                    "enable_gripper_flash_save"
+                ),
+                "gripper_status_poll_s": LaunchConfiguration("gripper_status_poll_s"),
             }
         ],
         condition=IfCondition(LaunchConfiguration("start_homing_button")),
@@ -338,6 +348,26 @@ def generate_launch_description():
                 "emergency_gripper_cancel_before_open",
                 default_value="true",
                 description="Cancel current gripper action goals before sending emergency open.",
+            ),
+            DeclareLaunchArgument(
+                "enable_gripper_maintenance_ui",
+                default_value="true",
+                description="Add gripper status, recovery, and protection controls to the operator GUI.",
+            ),
+            DeclareLaunchArgument(
+                "enable_gripper_parameter_writes",
+                default_value="false",
+                description="Allow the operator GUI to write gripper protection parameters to RAM.",
+            ),
+            DeclareLaunchArgument(
+                "enable_gripper_flash_save",
+                default_value="false",
+                description="Allow the operator GUI to save current gripper parameters to actuator Flash.",
+            ),
+            DeclareLaunchArgument(
+                "gripper_status_poll_s",
+                default_value="1.0",
+                description="Polling period for gripper status in the operator GUI.",
             ),
             DeclareLaunchArgument("plot_history_sec", default_value="15.0"),
             DeclareLaunchArgument("plot_rate_hz", default_value="10.0"),

@@ -142,6 +142,16 @@ def generate_launch_description():
                 "gripper_cancel_before_open": LaunchConfiguration(
                     "emergency_gripper_cancel_before_open"
                 ),
+                "enable_gripper_maintenance_ui": LaunchConfiguration(
+                    "enable_gripper_maintenance_ui"
+                ),
+                "enable_gripper_parameter_writes": LaunchConfiguration(
+                    "enable_gripper_parameter_writes"
+                ),
+                "enable_gripper_flash_save": LaunchConfiguration(
+                    "enable_gripper_flash_save"
+                ),
+                "gripper_status_poll_s": LaunchConfiguration("gripper_status_poll_s"),
             }
         ],
         condition=IfCondition(

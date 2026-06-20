@@ -1,0 +1,10 @@
+int32 over_current_ma
+float64 over_temperature_c
+float64 recovery_temperature_c
+bool save_to_flash
+---
+bool success
+string message
+int32 applied_over_current_ma
+float64 applied_over_temperature_c
+float64 applied_recovery_temperature_c

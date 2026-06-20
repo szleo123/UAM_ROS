@@ -36,6 +36,9 @@
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/types/hardware_interface_return_values.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
+#include "my_arm_hardware/srv/get_gripper_protection.hpp"
+#include "my_arm_hardware/srv/gripper_status.hpp"
+#include "my_arm_hardware/srv/set_gripper_protection.hpp"
 #include "rclcpp/clock.hpp"
 #include "rclcpp/executors/single_threaded_executor.hpp"
 #include "rclcpp/logger.hpp"
@@ -121,6 +124,26 @@ private:
     FULL_MIT = 2,
   };
 
+public:
+  struct GripperStatusData
+  {
+    bool valid{false};
+    int target_units{0};
+    int position_units{0};
+    double position{0.0};
+    int current_ma{0};
+    double temperature_c{0.0};
+    uint8_t error_flags{0};
+  };
+
+  struct GripperProtectionData
+  {
+    int over_current_ma{0};
+    double over_temperature_c{0.0};
+    double recovery_temperature_c{0.0};
+  };
+
+private:
   // Parameters for the Serial communications 
   std::string serial_port_path_ {"/dev/ttyUSB0"};
   std::string reader_port_path_ {"/dev/ttyUSB1"};
@@ -281,6 +304,33 @@ private:
   void apply_stm32_mit_gains_command(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
   void handle_system_event(uint8_t event_code);
   bool send_system_command(uint8_t command_code, std::string & failure_reason);
+  bool gripper_query_status(GripperStatusData & status, std::string & message);
+  bool gripper_query_protection(GripperProtectionData & protection, std::string & message);
+  bool gripper_clear_fault(std::string & message);
+  bool gripper_clear_fault_and_open(std::string & message);
+  bool gripper_save_parameters(std::string & message);
+  bool gripper_set_protection(
+    int over_current_ma,
+    double over_temperature_c,
+    double recovery_temperature_c,
+    bool save_to_flash,
+    GripperProtectionData & applied,
+    std::string & message);
+  bool gripper_send_frame_locked(const std::vector<uint8_t> & frame, std::string & message);
+  bool gripper_read_frame_locked(
+    std::vector<uint8_t> & frame,
+    std::chrono::milliseconds timeout,
+    std::string & message);
+  bool gripper_send_single_control_locked(uint8_t command, std::string & message);
+  bool gripper_read_u16_register_locked(
+    uint8_t address,
+    uint16_t & value,
+    std::string & message);
+  bool gripper_write_u16_register_locked(
+    uint8_t address,
+    uint16_t value,
+    std::string & message);
+  void update_gripper_status_from_frame(const std::vector<uint8_t> & frame);
   bool start_damiao_initialization(const std::string & source, std::string & message);
   bool confirm_drop_pose(const std::string & source, std::string & message);
   bool can_write_motion_commands();
@@ -304,7 +354,15 @@ private:
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr homing_drop_pose_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr homing_init_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr homing_confirm_srv_;
+  rclcpp::Service<my_arm_hardware::srv::GripperStatus>::SharedPtr gripper_status_srv_;
+  rclcpp::Service<my_arm_hardware::srv::GetGripperProtection>::SharedPtr gripper_protection_get_srv_;
+  rclcpp::Service<my_arm_hardware::srv::SetGripperProtection>::SharedPtr gripper_protection_set_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr gripper_clear_fault_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr gripper_clear_fault_open_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr gripper_save_parameters_srv_;
   std::mutex homing_state_mtx_;
+  std::mutex gripper_status_mtx_;
+  GripperStatusData last_gripper_status_;
   RosMasterHomingState homing_state_{RosMasterHomingState::WAITING_INIT_COMMAND};
   uint8_t last_stm32_sys_state_{std::numeric_limits<uint8_t>::max()};
   uint8_t last_stm32_write_mode_{std::numeric_limits<uint8_t>::max()};

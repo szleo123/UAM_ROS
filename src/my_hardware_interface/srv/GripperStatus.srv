@@ -1,0 +1,14 @@
+---
+bool success
+string message
+bool connected
+int32 target_units
+int32 position_units
+float64 position
+int32 current_ma
+float64 temperature_c
+uint8 error_flags
+bool stall_protection
+bool over_temperature
+bool over_current
+bool motor_abnormal

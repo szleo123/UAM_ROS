@@ -1,0 +1,6 @@
+---
+bool success
+string message
+int32 over_current_ma
+float64 over_temperature_c
+float64 recovery_temperature_c

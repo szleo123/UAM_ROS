@@ -273,6 +273,53 @@ The MIT gain tuner publishes to `/my_arm_system/stm32_mit_gains_cmd`, which the
 Jetson hardware interface consumes in FULL MIT mode. Use it for deliberate bench
 tuning sessions, not as a default UAV operator display.
 
+## Gripper Maintenance
+
+The gripper serial protocol is owned by the Jetson hardware interface. The
+laptop operator UI only calls Jetson ROS services, so there should not be a
+second process opening the gripper USB port.
+
+The homing/operator window includes a gripper section by default:
+
+```bash
+ros2 launch uam_bringup operator_tools.launch.py
+```
+
+It polls `/gripper/query_status` and shows position, current, temperature, and
+protection flags. The recovery buttons call:
+
+- `/gripper/clear_fault`
+- `/gripper/clear_fault_and_open`
+
+`Clear Fault + Open` is the preferred branch-release action because it clears
+latched stall/over-current faults, re-enables the actuator, and sends an open
+command. Over-temperature faults cannot be cleared by command; the actuator
+must cool below its recovery temperature.
+
+Protection parameter writes are guarded separately from STM32 write tools:
+
+```bash
+ros2 launch uam_bringup operator_tools.launch.py \
+  enable_gripper_parameter_writes:=true
+```
+
+This enables editing the actuator protection registers in RAM:
+
+- over-current limit, register `32~33`, range `300..1500 mA`
+- over-temperature limit, register `98~99`, unit `degC * 10`
+- recovery temperature, register `100~101`, unit `degC * 10`
+
+To allow saving the current actuator RAM settings into internal Flash so they
+survive power cycling, also enable:
+
+```bash
+ros2 launch uam_bringup operator_tools.launch.py \
+  enable_gripper_parameter_writes:=true \
+  enable_gripper_flash_save:=true
+```
+
+Only save to Flash after a temporary RAM setting has been tested on the bench.
+
 ## Joint-3 Zeroing From Laptop
 
 For split mode, keep the Jetson headless:
