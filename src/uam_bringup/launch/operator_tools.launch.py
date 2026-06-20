@@ -120,6 +120,43 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration("start_homing_button")),
     )
 
+    state_machine_dashboard = Node(
+        package="uam_bringup",
+        executable="state_machine_dashboard.py",
+        name="operator_state_machine_dashboard",
+        output="screen",
+        parameters=[
+            {
+                "state_log_enabled": LaunchConfiguration("state_log_enabled"),
+                "state_log_directory": LaunchConfiguration("state_log_directory"),
+                "state_log_file": LaunchConfiguration("state_log_file"),
+                "state_log_run_label": LaunchConfiguration("state_log_run_label"),
+                "state_log_append": LaunchConfiguration("state_log_append"),
+                "state_log_match_latest_stm32": LaunchConfiguration(
+                    "state_log_match_latest_stm32"
+                ),
+                "state_log_heartbeat_s": LaunchConfiguration("state_log_heartbeat_s"),
+                "pipeline_log_enabled": LaunchConfiguration("pipeline_log_enabled"),
+                "pipeline_log_file": LaunchConfiguration("pipeline_log_file"),
+                "pipeline_markdown_file": LaunchConfiguration("pipeline_markdown_file"),
+                "gripper_status_service": LaunchConfiguration("gripper_status_service"),
+                "gripper_status_poll_s": LaunchConfiguration("gripper_status_poll_s"),
+                "gripper_open_position": LaunchConfiguration("state_gripper_open_position"),
+                "gripper_closed_position": LaunchConfiguration(
+                    "state_gripper_closed_position"
+                ),
+                "gripper_position_tolerance": LaunchConfiguration(
+                    "state_gripper_position_tolerance"
+                ),
+                "topic_timeout_s": LaunchConfiguration("state_topic_timeout_s"),
+                "trajectory_active_timeout_s": LaunchConfiguration(
+                    "state_trajectory_active_timeout_s"
+                ),
+            }
+        ],
+        condition=IfCondition(LaunchConfiguration("start_state_dashboard")),
+    )
+
     joint_feedback_monitor = Node(
         package="my_arm_hardware",
         executable="joint_feedback_monitor.py",
@@ -249,6 +286,11 @@ def generate_launch_description():
                 description="Show the remote homing/zeroing GUI on the laptop.",
             ),
             DeclareLaunchArgument(
+                "start_state_dashboard",
+                default_value="true",
+                description="Show the live reviewer-facing arm/teleop/gripper state machine.",
+            ),
+            DeclareLaunchArgument(
                 "start_trajectory_command_monitor",
                 default_value="true",
                 description="Show final arm trajectory commands on the laptop.",
@@ -369,6 +411,89 @@ def generate_launch_description():
                 default_value="1.0",
                 description="Polling period for gripper status in the operator GUI.",
             ),
+            DeclareLaunchArgument(
+                "gripper_status_service",
+                default_value="/gripper/query_status",
+                description="Existing gripper status service used by operator tools.",
+            ),
+            DeclareLaunchArgument(
+                "state_log_enabled",
+                default_value="true",
+                description="Record state-machine transitions to a CSV under run_logs.",
+            ),
+            DeclareLaunchArgument(
+                "state_log_directory",
+                default_value="/home/li/UAM_ROS/run_logs",
+                description="Directory for state-machine logs and STM32 trace matching.",
+            ),
+            DeclareLaunchArgument(
+                "state_log_file",
+                default_value="",
+                description="Optional exact state-machine CSV path. Empty matches newest STM32 trace.",
+            ),
+            DeclareLaunchArgument(
+                "state_log_run_label",
+                default_value="",
+                description="Optional label appended before _state_machine in generated log filenames.",
+            ),
+            DeclareLaunchArgument(
+                "state_log_append",
+                default_value="false",
+                description="Append to an existing state-machine CSV instead of overwriting.",
+            ),
+            DeclareLaunchArgument(
+                "state_log_match_latest_stm32",
+                default_value="false",
+                description=(
+                    "Use newest run_logs/*.csv stem and write "
+                    "<stem>_state_machine.csv when state_log_file is empty."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "state_log_heartbeat_s",
+                default_value="10.0",
+                description="Repeat unchanged state-machine rows at this slow heartbeat.",
+            ),
+            DeclareLaunchArgument(
+                "pipeline_log_enabled",
+                default_value="true",
+                description="Record manual reviewer-facing pipeline evidence rows.",
+            ),
+            DeclareLaunchArgument(
+                "pipeline_log_file",
+                default_value="",
+                description="Optional exact pipeline evidence CSV path. Empty derives from the state log stem.",
+            ),
+            DeclareLaunchArgument(
+                "pipeline_markdown_file",
+                default_value="",
+                description="Optional exact pipeline evidence Markdown path. Empty derives from the state log stem.",
+            ),
+            DeclareLaunchArgument(
+                "state_gripper_open_position",
+                default_value="0.0",
+                description="Open gripper position used for state classification.",
+            ),
+            DeclareLaunchArgument(
+                "state_gripper_closed_position",
+                default_value="-0.69",
+                description="Closed/sampling gripper position used for state classification.",
+            ),
+            DeclareLaunchArgument(
+                "state_gripper_position_tolerance",
+                default_value="0.04",
+                description="Position tolerance for open/closed gripper state classification.",
+            ),
+            DeclareLaunchArgument(
+                "state_topic_timeout_s",
+                default_value="1.0",
+                description="Freshness timeout for dashboard status topics.",
+            ),
+            DeclareLaunchArgument(
+                "state_trajectory_active_timeout_s",
+                default_value="0.75",
+                description="Recent trajectory window used to classify teleop vs planned source.",
+            ),
             DeclareLaunchArgument("plot_history_sec", default_value="15.0"),
             DeclareLaunchArgument("plot_rate_hz", default_value="10.0"),
             DeclareLaunchArgument("joint_feedback_monitor_rate_hz", default_value="50.0"),
@@ -433,6 +558,7 @@ def generate_launch_description():
             DeclareLaunchArgument("manual_torque_live_update", default_value="false"),
             OpaqueFunction(function=_rviz_node),
             homing_button,
+            state_machine_dashboard,
             joint_feedback_monitor,
             trajectory_command_monitor,
             OpaqueFunction(function=_dynamics_preview_node),

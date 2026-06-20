@@ -230,12 +230,55 @@ By default this starts:
 
 - RViz
 - homing/zeroing, emergency arm-stop, and emergency gripper-open buttons
+- live arm/teleop/gripper state-machine dashboard
 - joint feedback/reference monitor
 - final trajectory command monitor
 
 The monitor windows run on the laptop, but they subscribe to topics published by
 the Jetson over ROS 2. This keeps plotting and operator visualization off the
 Jetson while leaving hardware execution on the Jetson.
+
+The state-machine dashboard is read-only. It visualizes the human-in-the-loop
+sampling flow from initialization and joint-3 zeroing into planned motion, with
+teleop shown as the operator override path. The gripper state is shown as an
+independent monitored device and adapts to the active backend reported by
+`/gripper/query_status`.
+
+The dashboard also records semantic state transitions in `run_logs`. If an STM32
+trace exists, it uses the same timestamp stem:
+
+```text
+run_logs/
+  20260620_113958.csv
+  20260620_113958_state_machine.csv
+  20260620_113958_pipeline_log.csv
+  20260620_113958_pipeline_log.md
+```
+
+In split-machine mode, Jetson and laptop logs are written to their own local
+filesystems unless you mount a shared folder. To make the two local filenames
+easy to pair later, pass the same run label on both machines:
+
+```bash
+# Jetson
+ros2 launch uam_bringup jetson.launch.py stm32_trace_run_label:=branch_test_01
+
+# Laptop
+ros2 launch uam_bringup operator_tools.launch.py state_log_run_label:=branch_test_01
+```
+
+The right side of the dashboard contains pipeline evidence buttons for the
+reviewer-facing test record. These buttons are log-only and never command the
+robot. Use them to mark physical-world milestones that ROS cannot honestly infer
+by itself, such as target identification, human takeover, sampling success or
+failure, retry, and return completion. Each row is written with the current
+arm/teleop/gripper snapshot.
+
+Disable the dashboard if you only want the lower-level monitor windows:
+
+```bash
+ros2 launch uam_bringup operator_tools.launch.py start_state_dashboard:=false
+```
 
 The homing button also runs on the laptop by default. It watches
 `/arm_homing/state`, `/arm_homing/status_text`, and `/arm_homing/stm32_sys_state`
