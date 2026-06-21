@@ -395,7 +395,7 @@ static inline bool gripper_parse_status_frame(
   const std::vector<uint8_t>& frame,
   my_arm_hardware::MyArmHardware::GripperStatusData& status)
 {
-  if (frame.size() < 22 || frame[0] != 0xAA || frame[1] != 0x55) {
+  if (frame.size() < 22 || frame[0] != 0xAA || frame[1] != 0x55 || frame[2] != 0x11) {
     return false;
   }
 
@@ -408,8 +408,8 @@ static inline bool gripper_parse_status_frame(
   status.current_ma = static_cast<int>(
     static_cast<uint16_t>(frame[12]) | (static_cast<uint16_t>(frame[13]) << 8));
   // Per LA manual status reply layout:
-  // B20 is internal data 2 high byte; B21 is the actual error-information byte.
-  status.error_flags = frame[21];
+  // B14 is force low byte, B15 is error information, B16 is force high byte.
+  status.error_flags = frame[15];
   return true;
 }
 
@@ -1110,9 +1110,9 @@ hardware_interface::return_type MyArmHardware::read(
           hw_efforts_[aux_idx] = 0.0;
         }
         RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 2000,
-          "Gripper read: units %d -> ROS %.3f, current=%dmA, temp=%.0fC, faults=%s",
+          "Gripper read: units %d -> ROS %.3f, current=%dmA, temp=%.0fC, err=0x%02X, faults=%s",
           status.position_units, status.position, status.current_ma,
-          status.temperature_c, gripper_fault_text(status.error_flags).c_str());
+          status.temperature_c, status.error_flags, gripper_fault_text(status.error_flags).c_str());
       }
 
     } catch (const std::exception& e) {
