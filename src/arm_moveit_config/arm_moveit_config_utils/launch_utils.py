@@ -243,7 +243,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "arm_command_velocity_limits_rad_s",
-            default_value="2.0,2.0,0.5,2.0,1.0,2.0",
+            default_value="0.20,0.20,0.10,0.20,0.10,0.20",
             description=(
                 "Comma-separated final arm command velocity limits in rad/s. "
                 "Applies equally to MoveIt, rqt, and teleop commands."
@@ -251,7 +251,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "arm_command_acceleration_limits_rad_s2",
-            default_value="1.0,1.0,0.2,1.0,0.5,1.0",
+            default_value="0.10,0.10,0.10,0.10,0.10,0.10",
             description=(
                 "Comma-separated final arm command acceleration limits in rad/s^2. "
                 "Applies equally to MoveIt, rqt, and teleop commands."
@@ -304,7 +304,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "stm32_v_des_limits_rad_s",
-            default_value="2.0,2.0,0.5,2.0,1.0,2.0",
+            default_value="0.20,0.20,0.10,0.20,0.10,0.20",
             description=(
                 "Comma-separated per-joint absolute clamps for velocity commands sent "
                 "to STM32 v_des in full MIT mode. Defaults match joint_limits.yaml."
