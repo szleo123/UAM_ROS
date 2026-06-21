@@ -51,7 +51,7 @@
         <joint name="joint_3" value="-1.309"/>
         <joint name="joint_4" value="-1.57"/>
         <joint name="joint_5" value="0.785398"/>
-        <joint name="joint_6" value="-1.57"/>
+        <joint name="joint_6" value="1.57"/>
     </group_state>
     <group_state name="open" group="gripper">
         <joint name="tool_joint" value="0.0"/>
