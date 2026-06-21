@@ -24,6 +24,9 @@
     <xacro:arg name="arm_joint_offsets" default="0,0,0,0,0,0"/>
     <xacro:arg name="hw_slowdown" default="10"/>
     <xacro:arg name="feedback_velocity_low_pass_alpha" default="1,1,1,1,1,1"/>
+    <xacro:arg name="enable_arm_command_limiter" default="true"/>
+    <xacro:arg name="arm_command_velocity_limits_rad_s" default="2.0,2.0,0.5,2.0,1.0,2.0"/>
+    <xacro:arg name="arm_command_acceleration_limits_rad_s2" default="1.0,1.0,0.2,1.0,0.5,1.0"/>
     <xacro:arg name="initial_read_timeout_sec" default="2.0"/>
     <xacro:arg name="first_power_on" default="true"/>
     <xacro:arg name="aux_joint_min" default="-0.69"/>
@@ -32,7 +35,7 @@
     <xacro:arg name="stm32_control_mode" default="0"/>
     <xacro:arg name="stm32_kp" default="50,50,50,50,50,50"/>
     <xacro:arg name="stm32_kd" default="2,2,2,2,2,2"/>
-    <xacro:arg name="stm32_v_des_limits_rad_s" default="1,1,1,1,1,1"/>
+    <xacro:arg name="stm32_v_des_limits_rad_s" default="2.0,2.0,0.5,2.0,1.0,2.0"/>
     <xacro:arg name="stm32_heartbeat_duration_sec" default="1.0"/>
     <xacro:arg name="stm32_trigger_duration_sec" default="3.0"/>
     <xacro:arg name="stm32_feedback_wait_timeout_sec" default="2.0"/>
@@ -97,6 +100,9 @@
         arm_joint_offsets:='0,0,0,0,0,0'
         hw_slowdown:='10'
         feedback_velocity_low_pass_alpha:='1,1,1,1,1,1'
+        enable_arm_command_limiter:='true'
+        arm_command_velocity_limits_rad_s:='2.0,2.0,0.5,2.0,1.0,2.0'
+        arm_command_acceleration_limits_rad_s2:='1.0,1.0,0.2,1.0,0.5,1.0'
         initial_read_timeout_sec:='2.0'
         first_power_on:='true'
         aux_joint_min:='-0.69'
@@ -105,7 +111,7 @@
         stm32_control_mode:='0'
         stm32_kp:='50,50,50,50,50,50'
         stm32_kd:='2,2,2,2,2,2'
-        stm32_v_des_limits_rad_s:='1,1,1,1,1,1'
+        stm32_v_des_limits_rad_s:='2.0,2.0,0.5,2.0,1.0,2.0'
         stm32_heartbeat_duration_sec:='1.0'
         stm32_trigger_duration_sec:='3.0'
         stm32_feedback_wait_timeout_sec:='2.0'
@@ -160,6 +166,9 @@
                     <param name="arm_joint_offsets">${arm_joint_offsets}</param>
                     <param name="hw_slowdown">${hw_slowdown}</param>
                     <param name="feedback_velocity_low_pass_alpha">${feedback_velocity_low_pass_alpha}</param>
+                    <param name="enable_arm_command_limiter">${enable_arm_command_limiter}</param>
+                    <param name="arm_command_velocity_limits_rad_s">${arm_command_velocity_limits_rad_s}</param>
+                    <param name="arm_command_acceleration_limits_rad_s2">${arm_command_acceleration_limits_rad_s2}</param>
                     <param name="initial_read_timeout_sec">${initial_read_timeout_sec}</param>
                     <param name="first_power_on">${first_power_on}</param>
                     <param name="aux_joint_min">${aux_joint_min}</param>

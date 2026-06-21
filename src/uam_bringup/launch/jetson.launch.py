@@ -229,7 +229,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "require_homing",
-            default_value="true",
+            default_value="false",
             description="Require /arm_homing/state == ALL_READY before teleop motion.",
         ),
         DeclareLaunchArgument(

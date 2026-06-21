@@ -178,7 +178,13 @@ private:
   Stm32ControlMode stm32_control_mode_{Stm32ControlMode::POSITION_ONLY};
   std::array<double, 6> stm32_kp_{{50.0, 50.0, 50.0, 50.0, 50.0, 50.0}};
   std::array<double, 6> stm32_kd_{{2.0, 2.0, 2.0, 2.0, 2.0, 2.0}};
-  std::array<double, 6> stm32_v_des_limits_rad_s_{{1.0, 1.0, 1.0, 1.0, 1.0, 1.0}};
+  std::array<double, 6> stm32_v_des_limits_rad_s_{{2.0, 2.0, 0.5, 2.0, 1.0, 2.0}};
+  bool enable_arm_command_limiter_{true};
+  std::array<double, 6> arm_command_velocity_limits_rad_s_{{2.0, 2.0, 0.5, 2.0, 1.0, 2.0}};
+  std::array<double, 6> arm_command_acceleration_limits_rad_s2_{{1.0, 1.0, 0.2, 1.0, 0.5, 1.0}};
+  std::array<double, 6> limited_arm_commands_{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+  std::array<double, 6> limited_arm_command_velocities_{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
+  bool arm_command_limiter_ready_{false};
   std::mutex stm32_gain_mtx_;
   double stm32_heartbeat_duration_sec_{1.0};
   double stm32_trigger_duration_sec_{3.0};
@@ -291,6 +297,11 @@ private:
   std::vector<double> last_sent_commands_;
   void reset_joint_buffers(double value);
   void sync_commands_to_states();
+  void parse_arm_command_limiter_parameters();
+  void reset_arm_command_limiter_to_states();
+  void apply_arm_command_limiter(const rclcpp::Duration & period);
+  double arm_command_for_stm32(size_t joint_index) const;
+  double arm_command_velocity_for_stm32(size_t joint_index) const;
   double filter_feedback_velocity(size_t joint_index, double raw_velocity) const;
   void publish_raw_feedback_velocities(const std::array<double, 6> & raw_velocities);
   size_t arm_joint_count() const;

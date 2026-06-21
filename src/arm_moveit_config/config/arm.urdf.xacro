@@ -24,6 +24,9 @@
     <xacro:arg name="arm_joint_offsets" default="0,0,0,0,0,0" />
     <xacro:arg name="hw_slowdown" default="10" />
     <xacro:arg name="feedback_velocity_low_pass_alpha" default="1,1,1,1,1,1" />
+    <xacro:arg name="enable_arm_command_limiter" default="true" />
+    <xacro:arg name="arm_command_velocity_limits_rad_s" default="2.0,2.0,0.5,2.0,1.0,2.0" />
+    <xacro:arg name="arm_command_acceleration_limits_rad_s2" default="1.0,1.0,0.2,1.0,0.5,1.0" />
     <xacro:arg name="initial_read_timeout_sec" default="2.0" />
     <xacro:arg name="first_power_on" default="true" />
     <xacro:arg name="aux_joint_min" default="-0.69" />
@@ -32,7 +35,7 @@
     <xacro:arg name="stm32_control_mode" default="0" />
     <xacro:arg name="stm32_kp" default="50,50,50,50,50,50" />
     <xacro:arg name="stm32_kd" default="2,2,2,2,2,2" />
-    <xacro:arg name="stm32_v_des_limits_rad_s" default="1,1,1,1,1,1" />
+    <xacro:arg name="stm32_v_des_limits_rad_s" default="2.0,2.0,0.5,2.0,1.0,2.0" />
     <xacro:arg name="stm32_heartbeat_duration_sec" default="1.0" />
     <xacro:arg name="stm32_trigger_duration_sec" default="3.0" />
     <xacro:arg name="stm32_feedback_wait_timeout_sec" default="2.0" />
@@ -119,6 +122,9 @@
       arm_joint_offsets="$(arg arm_joint_offsets)"
       hw_slowdown="$(arg hw_slowdown)"
       feedback_velocity_low_pass_alpha="$(arg feedback_velocity_low_pass_alpha)"
+      enable_arm_command_limiter="$(arg enable_arm_command_limiter)"
+      arm_command_velocity_limits_rad_s="$(arg arm_command_velocity_limits_rad_s)"
+      arm_command_acceleration_limits_rad_s2="$(arg arm_command_acceleration_limits_rad_s2)"
       initial_read_timeout_sec="$(arg initial_read_timeout_sec)"
       first_power_on="$(arg first_power_on)"
       aux_joint_min="$(arg aux_joint_min)"

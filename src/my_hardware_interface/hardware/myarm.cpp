@@ -634,6 +634,7 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
   else
     hw_slowdown_ = 1.0;
 
+  parse_arm_command_limiter_parameters();
   parse_stm32_parameters();
   if (info_.hardware_parameters.count("initial_read_timeout_sec"))
     initial_read_timeout_sec_ = std::stod(info_.hardware_parameters.at("initial_read_timeout_sec"));
@@ -715,7 +716,7 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
   }
 
   RCLCPP_INFO(get_logger(),
-              "Initialized MyArmSystem with %i joints, arm_cdc_port=%s, baud=%u, scale=%.1f, slowdown=%.1f, first_power_on=%s, stm32_control_mode=%u, stm32_zero_trigger=%s, gripper_backend=%s, gripper_port=%s, gripper_baud=%u, command_frame=%s, dynamics_feedforward=%s, dynamics_mode=%s, arm_joint_offsets=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], feedback_velocity_alpha=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], dynamics_torque_scales=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
+              "Initialized MyArmSystem with %i joints, arm_cdc_port=%s, baud=%u, scale=%.1f, slowdown=%.1f, first_power_on=%s, stm32_control_mode=%u, stm32_zero_trigger=%s, gripper_backend=%s, gripper_port=%s, gripper_baud=%u, command_frame=%s, command_limiter=%s, command_vel_limits=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], command_accel_limits=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], dynamics_feedforward=%s, dynamics_mode=%s, arm_joint_offsets=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], feedback_velocity_alpha=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f], dynamics_torque_scales=[%.3f,%.3f,%.3f,%.3f,%.3f,%.3f]",
               static_cast<int>(info_.joints.size()), serial_port_path_.c_str(),
               baudrate_, pos_scale_, hw_slowdown_,
               first_power_on_ ? "true" : "false",
@@ -725,6 +726,13 @@ hardware_interface::CallbackReturn MyArmHardware::on_init(
               gripper_port_path_.c_str(),
               gripper_baudrate_,
               arm_command_frame_format_ == ArmCommandFrameFormat::POSITION_TORQUE ? "position_torque" : "legacy_position",
+              enable_arm_command_limiter_ ? "true" : "false",
+              arm_command_velocity_limits_rad_s_[0], arm_command_velocity_limits_rad_s_[1],
+              arm_command_velocity_limits_rad_s_[2], arm_command_velocity_limits_rad_s_[3],
+              arm_command_velocity_limits_rad_s_[4], arm_command_velocity_limits_rad_s_[5],
+              arm_command_acceleration_limits_rad_s2_[0], arm_command_acceleration_limits_rad_s2_[1],
+              arm_command_acceleration_limits_rad_s2_[2], arm_command_acceleration_limits_rad_s2_[3],
+              arm_command_acceleration_limits_rad_s2_[4], arm_command_acceleration_limits_rad_s2_[5],
               enable_dynamics_feedforward_ ? "true" : "false",
               dynamics_mode_ == DynamicsMode::FULL ? "full" :
                 (dynamics_mode_ == DynamicsMode::CORIOLIS ? "coriolis" : "gravity"),
@@ -1255,6 +1263,8 @@ hardware_interface::return_type MyArmHardware::write(
     std::array<double, 6> tau_ros_nm{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
     std::array<double, 6> tau_hw_nm{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
 
+    apply_arm_command_limiter(period);
+
     if (stm32_control_mode_ == Stm32ControlMode::POSITION_TORQUE ||
         stm32_control_mode_ == Stm32ControlMode::FULL_MIT)
     {
@@ -1280,10 +1290,10 @@ hardware_interface::return_type MyArmHardware::write(
     if (arm_joint_count() >= kArmFeedbackJointCount)
     {
       RCLCPP_INFO_THROTTLE(get_logger(), *clock_, 1000, 
-          "STM32 write mode=%u positions: %.3f %.3f %.3f %.3f %.3f %.3f",
+          "STM32 write mode=%u limited positions: %.3f %.3f %.3f %.3f %.3f %.3f",
           static_cast<unsigned>(mode),
-          hw_commands_[0], hw_commands_[1], hw_commands_[2],
-          hw_commands_[3], hw_commands_[4], hw_commands_[5]);
+          arm_command_for_stm32(0), arm_command_for_stm32(1), arm_command_for_stm32(2),
+          arm_command_for_stm32(3), arm_command_for_stm32(4), arm_command_for_stm32(5));
       if (stm32_control_mode_ == Stm32ControlMode::POSITION_TORQUE ||
           stm32_control_mode_ == Stm32ControlMode::FULL_MIT)
       {
@@ -1361,6 +1371,9 @@ void MyArmHardware::reset_joint_buffers(double value)
   reset_vector(hw_command_velocities_, 0.0);
   reset_vector(hw_velocities_, value);
   reset_vector(hw_efforts_, 0.0);
+  limited_arm_commands_.fill(value);
+  limited_arm_command_velocities_.fill(0.0);
+  arm_command_limiter_ready_ = false;
 }
 
 void MyArmHardware::sync_commands_to_states()
@@ -1371,11 +1384,154 @@ void MyArmHardware::sync_commands_to_states()
   if (hw_command_velocities_.size() != hw_states_.size())
     hw_command_velocities_.resize(hw_states_.size(), 0.0);
   std::fill(hw_command_velocities_.begin(), hw_command_velocities_.end(), 0.0);
+  reset_arm_command_limiter_to_states();
 }
 
 size_t MyArmHardware::arm_joint_count() const
 {
   return std::min(info_.joints.size(), kArmFeedbackJointCount);
+}
+
+void MyArmHardware::parse_arm_command_limiter_parameters()
+{
+  if (info_.hardware_parameters.count("enable_arm_command_limiter"))
+    enable_arm_command_limiter_ =
+      string_to_bool(info_.hardware_parameters.at("enable_arm_command_limiter"));
+
+  if (info_.hardware_parameters.count("arm_command_velocity_limits_rad_s"))
+  {
+    const auto values = split_list(info_.hardware_parameters.at("arm_command_velocity_limits_rad_s"));
+    for (size_t i = 0; i < values.size() && i < arm_command_velocity_limits_rad_s_.size(); ++i)
+      arm_command_velocity_limits_rad_s_[i] = std::max(0.0, std::stod(values[i]));
+  }
+
+  if (info_.hardware_parameters.count("arm_command_acceleration_limits_rad_s2"))
+  {
+    const auto values = split_list(info_.hardware_parameters.at("arm_command_acceleration_limits_rad_s2"));
+    for (size_t i = 0; i < values.size() && i < arm_command_acceleration_limits_rad_s2_.size(); ++i)
+      arm_command_acceleration_limits_rad_s2_[i] = std::max(0.0, std::stod(values[i]));
+  }
+}
+
+void MyArmHardware::reset_arm_command_limiter_to_states()
+{
+  for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+  {
+    const bool has_state = i < hw_states_.size() && std::isfinite(hw_states_[i]);
+    const bool has_command = i < hw_commands_.size() && std::isfinite(hw_commands_[i]);
+    limited_arm_commands_[i] = has_state ? hw_states_[i] : (has_command ? hw_commands_[i] : 0.0);
+    limited_arm_command_velocities_[i] = 0.0;
+  }
+  arm_command_limiter_ready_ = true;
+}
+
+void MyArmHardware::apply_arm_command_limiter(const rclcpp::Duration & period)
+{
+  if (!enable_arm_command_limiter_)
+  {
+    for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
+    {
+      limited_arm_commands_[i] =
+        i < hw_commands_.size() && std::isfinite(hw_commands_[i]) ? hw_commands_[i] : 0.0;
+      limited_arm_command_velocities_[i] =
+        i < hw_command_velocities_.size() && std::isfinite(hw_command_velocities_[i]) ?
+        hw_command_velocities_[i] : 0.0;
+    }
+    arm_command_limiter_ready_ = true;
+    return;
+  }
+
+  if (!arm_command_limiter_ready_)
+    reset_arm_command_limiter_to_states();
+
+  const double dt = safe_period_seconds(period);
+  bool limited = false;
+  size_t first_limited_joint = kArmFeedbackJointCount;
+  double first_raw = 0.0;
+  double first_limited = 0.0;
+
+  const size_t joints = std::min(arm_joint_count(), kArmFeedbackJointCount);
+  for (size_t i = 0; i < joints; ++i)
+  {
+    const double target =
+      i < hw_commands_.size() && std::isfinite(hw_commands_[i]) ? hw_commands_[i] :
+      limited_arm_commands_[i];
+    const double previous = std::isfinite(limited_arm_commands_[i]) ?
+      limited_arm_commands_[i] : target;
+    const double previous_velocity = std::isfinite(limited_arm_command_velocities_[i]) ?
+      limited_arm_command_velocities_[i] : 0.0;
+
+    const double remaining = target - previous;
+    double velocity = remaining / dt;
+    const double vmax = i < arm_command_velocity_limits_rad_s_.size() ?
+      arm_command_velocity_limits_rad_s_[i] : 0.0;
+    if (vmax > 0.0)
+      velocity = std::clamp(velocity, -vmax, vmax);
+
+    const double amax = i < arm_command_acceleration_limits_rad_s2_.size() ?
+      arm_command_acceleration_limits_rad_s2_[i] : 0.0;
+    if (amax > 0.0)
+      velocity = std::clamp(velocity, previous_velocity - amax * dt, previous_velocity + amax * dt);
+
+    double command = previous + velocity * dt;
+    if ((remaining >= 0.0 && command > target) || (remaining <= 0.0 && command < target))
+    {
+      command = target;
+      velocity = (command - previous) / dt;
+    }
+
+    if (std::abs(command - target) > 1e-6 && first_limited_joint == kArmFeedbackJointCount)
+    {
+      first_limited_joint = i;
+      first_raw = target;
+      first_limited = command;
+    }
+    limited = limited || std::abs(command - target) > 1e-6;
+
+    limited_arm_commands_[i] = command;
+    limited_arm_command_velocities_[i] = velocity;
+  }
+
+  for (size_t i = joints; i < kArmFeedbackJointCount; ++i)
+  {
+    limited_arm_commands_[i] =
+      i < hw_commands_.size() && std::isfinite(hw_commands_[i]) ? hw_commands_[i] : 0.0;
+    limited_arm_command_velocities_[i] = 0.0;
+  }
+
+  if (limited && first_limited_joint < kArmFeedbackJointCount)
+  {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *clock_, 1000,
+      "Arm command limiter active: joint_%zu target %.3f -> sent %.3f",
+      first_limited_joint + 1, first_raw, first_limited);
+  }
+}
+
+double MyArmHardware::arm_command_for_stm32(size_t joint_index) const
+{
+  if (joint_index < limited_arm_commands_.size() &&
+      arm_command_limiter_ready_ &&
+      std::isfinite(limited_arm_commands_[joint_index]))
+  {
+    return limited_arm_commands_[joint_index];
+  }
+  if (joint_index < hw_commands_.size() && std::isfinite(hw_commands_[joint_index]))
+    return hw_commands_[joint_index];
+  return 0.0;
+}
+
+double MyArmHardware::arm_command_velocity_for_stm32(size_t joint_index) const
+{
+  if (joint_index < limited_arm_command_velocities_.size() &&
+      arm_command_limiter_ready_ &&
+      std::isfinite(limited_arm_command_velocities_[joint_index]))
+  {
+    return limited_arm_command_velocities_[joint_index];
+  }
+  if (joint_index < hw_command_velocities_.size() && std::isfinite(hw_command_velocities_[joint_index]))
+    return hw_command_velocities_[joint_index];
+  return 0.0;
 }
 
 double MyArmHardware::filter_feedback_velocity(size_t joint_index, double raw_velocity) const
@@ -1819,8 +1975,7 @@ std::array<double, 6> MyArmHardware::compute_dynamics_torques(const rclcpp::Dura
         continue;
 
       const double position =
-        dynamics_use_commanded_position_ && i < hw_commands_.size() && std::isfinite(hw_commands_[i]) ?
-        hw_commands_[i] : hw_states_[i];
+        dynamics_use_commanded_position_ ? arm_command_for_stm32(i) : hw_states_[i];
       q[q_index] = std::isfinite(position) ? position : 0.0;
 
       if (dynamics_mode_ == DynamicsMode::CORIOLIS)
@@ -1831,7 +1986,7 @@ std::array<double, 6> MyArmHardware::compute_dynamics_torques(const rclcpp::Dura
       }
       else if (dynamics_mode_ == DynamicsMode::FULL)
       {
-        const double command = i < hw_commands_.size() && std::isfinite(hw_commands_[i]) ? hw_commands_[i] : q[q_index];
+        const double command = arm_command_for_stm32(i);
         if (!dynamics_command_history_ready_)
         {
           dynamics_last_commands_[i] = command;
@@ -2025,14 +2180,12 @@ void MyArmHardware::trace_stm32_sample(
 
   for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
   {
-    const double value = i < hw_commands_.size() && std::isfinite(hw_commands_[i]) ? hw_commands_[i] : 0.0;
+    const double value = arm_command_for_stm32(i);
     stm32_trace_stream_ << ',' << value;
   }
   for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
   {
-    const double value =
-      i < hw_command_velocities_.size() && std::isfinite(hw_command_velocities_[i]) ?
-      hw_command_velocities_[i] : 0.0;
+    const double value = arm_command_velocity_for_stm32(i);
     stm32_trace_stream_ << ',' << value;
   }
   for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
@@ -2042,7 +2195,7 @@ void MyArmHardware::trace_stm32_sample(
   }
   for (size_t i = 0; i < kArmFeedbackJointCount; ++i)
   {
-    const double command = i < hw_commands_.size() && std::isfinite(hw_commands_[i]) ? hw_commands_[i] : 0.0;
+    const double command = arm_command_for_stm32(i);
     const double state = i < hw_states_.size() && std::isfinite(hw_states_[i]) ? hw_states_[i] : 0.0;
     stm32_trace_stream_ << ',' << (command - state);
   }
@@ -2093,7 +2246,8 @@ std::vector<uint8_t> MyArmHardware::build_position_command_frame()
   {
     const double sign = (i < arm_joint_signs_.size()) ? arm_joint_signs_[i] : 1.0;
     const double offset = (i < arm_joint_offsets_.size()) ? arm_joint_offsets_[i] : 0.0;
-    long scaled = std::lround(sign * (hw_commands_[i] - offset) * pos_scale_);
+    const double command = arm_command_for_stm32(i);
+    long scaled = std::lround(sign * (command - offset) * pos_scale_);
     int16_t data16 = clamp_to_i16(scaled);
     frame[1 + 2 * i] = static_cast<uint8_t>(data16 & 0xFF);
     frame[1 + 2 * i + 1] = static_cast<uint8_t>((data16 >> 8) & 0xFF);
@@ -2120,7 +2274,8 @@ std::vector<uint8_t> MyArmHardware::build_position_torque_command_frame(
     {
       const double sign = (i < arm_joint_signs_.size()) ? arm_joint_signs_[i] : 1.0;
       const double offset = (i < arm_joint_offsets_.size()) ? arm_joint_offsets_[i] : 0.0;
-      long scaled = std::lround(sign * (hw_commands_[i] - offset) * pos_scale_);
+      const double command = arm_command_for_stm32(i);
+      long scaled = std::lround(sign * (command - offset) * pos_scale_);
       data16 = clamp_to_i16(scaled);
       if (i < last_sent_commands_.size())
         last_sent_commands_[i] = sign * static_cast<double>(data16) / pos_scale_ + offset;
@@ -2163,11 +2318,9 @@ std::vector<uint8_t> MyArmHardware::build_stm32_command_frame(
     if (zero_payload)
       continue;
 
-    const bool has_joint = i < arm_joint_count() && i < hw_commands_.size();
-    const double command = has_joint && std::isfinite(hw_commands_[i]) ? hw_commands_[i] : 0.0;
-    const double raw_velocity =
-      has_joint && i < hw_command_velocities_.size() && std::isfinite(hw_command_velocities_[i]) ?
-      hw_command_velocities_[i] : 0.0;
+    const bool has_joint = i < arm_joint_count();
+    const double command = has_joint ? arm_command_for_stm32(i) : 0.0;
+    const double raw_velocity = has_joint ? arm_command_velocity_for_stm32(i) : 0.0;
     const double velocity_limit = i < stm32_v_des_limits_rad_s_.size() ?
       stm32_v_des_limits_rad_s_[i] : 0.0;
     const double velocity = velocity_limit > 0.0 ?

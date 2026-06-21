@@ -25,6 +25,9 @@ HARDWARE_ARGUMENT_NAMES = [
     "arm_joint_offsets",
     "hw_slowdown",
     "feedback_velocity_low_pass_alpha",
+    "enable_arm_command_limiter",
+    "arm_command_velocity_limits_rad_s",
+    "arm_command_acceleration_limits_rad_s2",
     "initial_read_timeout_sec",
     "first_power_on",
     "ros2_controllers_file",
@@ -231,6 +234,30 @@ def common_bringup_launch_arguments(
             ),
         ),
         DeclareLaunchArgument(
+            "enable_arm_command_limiter",
+            default_value="false",
+            description=(
+                "Apply final per-joint position-command velocity/acceleration limits "
+                "inside the real hardware interface before sending STM32 frames."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "arm_command_velocity_limits_rad_s",
+            default_value="2.0,2.0,0.5,2.0,1.0,2.0",
+            description=(
+                "Comma-separated final arm command velocity limits in rad/s. "
+                "Applies equally to MoveIt, rqt, and teleop commands."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "arm_command_acceleration_limits_rad_s2",
+            default_value="1.0,1.0,0.2,1.0,0.5,1.0",
+            description=(
+                "Comma-separated final arm command acceleration limits in rad/s^2. "
+                "Applies equally to MoveIt, rqt, and teleop commands."
+            ),
+        ),
+        DeclareLaunchArgument(
             "initial_read_timeout_sec",
             default_value="2.0",
             description="How long to wait for initial hardware feedback before enabling writes.",
@@ -277,10 +304,10 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "stm32_v_des_limits_rad_s",
-            default_value="2.0,2.0,2.0,2.0,2.0,2.0",
+            default_value="2.0,2.0,0.5,2.0,1.0,2.0",
             description=(
                 "Comma-separated per-joint absolute clamps for velocity commands sent "
-                "to STM32 v_des in full MIT mode."
+                "to STM32 v_des in full MIT mode. Defaults match joint_limits.yaml."
             ),
         ),
         DeclareLaunchArgument(
@@ -826,6 +853,9 @@ def robot_description_mappings():
         "arm_joint_offsets": LaunchConfiguration("arm_joint_offsets"),
         "hw_slowdown": LaunchConfiguration("hw_slowdown"),
         "feedback_velocity_low_pass_alpha": LaunchConfiguration("feedback_velocity_low_pass_alpha"),
+        "enable_arm_command_limiter": LaunchConfiguration("enable_arm_command_limiter"),
+        "arm_command_velocity_limits_rad_s": LaunchConfiguration("arm_command_velocity_limits_rad_s"),
+        "arm_command_acceleration_limits_rad_s2": LaunchConfiguration("arm_command_acceleration_limits_rad_s2"),
         "initial_read_timeout_sec": LaunchConfiguration("initial_read_timeout_sec"),
         "first_power_on": LaunchConfiguration("first_power_on"),
         "aux_joint_min": LaunchConfiguration("aux_joint_min"),

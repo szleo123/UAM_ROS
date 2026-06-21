@@ -130,8 +130,8 @@ trajectory_deadman_gate:
     hold_duration_s: 0.20
     integrate_servo_deltas: true
     integrated_command_scale: 1.0
-    max_integrated_step_rad: 0.002
-    integrated_command_duration_s: 0.1
+    max_integrated_step_rad: 0.001
+    integrated_command_duration_s: 0.12
     integrated_publish_rate_hz: 100.0
     call_emergency_stop_on_block: true
     emergency_stop_service: /arm_emergency_stop/trigger

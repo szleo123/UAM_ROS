@@ -139,6 +139,33 @@ gate with:
 ros2 service call /trajectory_deadman_gate/set_armed std_srvs/srv/SetBool "{data: true}"
 ```
 
+### Final Arm Command Limits
+
+MoveIt planning limits live in `joint_limits.yaml`, but rqt and teleop can still
+produce commands outside that planner-only path. The real hardware interface
+therefore applies one final per-joint position-command limiter immediately
+before STM32 frames are serialized. This applies equally to MoveIt execution,
+`rqt_joint_trajectory_controller`, and teleop trajectories.
+
+Default launch values are conservative for joint 3:
+
+```bash
+enable_arm_command_limiter:=true
+arm_command_velocity_limits_rad_s:=2.0,2.0,0.5,2.0,1.0,2.0
+arm_command_acceleration_limits_rad_s2:=1.0,1.0,0.2,1.0,0.5,1.0
+stm32_v_des_limits_rad_s:=2.0,2.0,0.5,2.0,1.0,2.0
+```
+
+For slower joint-3 testing:
+
+```bash
+ros2 launch uam_bringup jetson.launch.py \
+  arm_command_velocity_limits_rad_s:=2.0,2.0,0.3,2.0,1.0,2.0 \
+  arm_command_acceleration_limits_rad_s2:=1.0,1.0,0.1,1.0,0.5,1.0
+```
+
+The STM32 trace `cmd_j*` columns record the limited command sent to hardware.
+
 ## Laptop Launch
 
 Start the operator-side Geomagic input stack on the laptop:
