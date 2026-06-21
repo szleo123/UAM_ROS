@@ -407,7 +407,9 @@ static inline bool gripper_parse_status_frame(
   status.temperature_c = static_cast<double>(static_cast<int8_t>(frame[11]));
   status.current_ma = static_cast<int>(
     static_cast<uint16_t>(frame[12]) | (static_cast<uint16_t>(frame[13]) << 8));
-  status.error_flags = frame[20];
+  // Per LA manual status reply layout:
+  // B20 is internal data 2 high byte; B21 is the actual error-information byte.
+  status.error_flags = frame[21];
   return true;
 }
 
