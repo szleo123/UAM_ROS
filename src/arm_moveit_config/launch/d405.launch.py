@@ -30,6 +30,19 @@ def _include_realsense(context, *args, **kwargs):
                 SetLaunchConfiguration("enable_infra1", LaunchConfiguration("enable_infra1")),
                 SetLaunchConfiguration("enable_infra2", LaunchConfiguration("enable_infra2")),
                 SetLaunchConfiguration(
+                    "rgb_camera.color_profile", LaunchConfiguration("color_profile")
+                ),
+                SetLaunchConfiguration(
+                    "depth_module.color_profile", LaunchConfiguration("color_profile")
+                ),
+                SetLaunchConfiguration(
+                    "depth_module.depth_profile", LaunchConfiguration("depth_profile")
+                ),
+                SetLaunchConfiguration(
+                    "depth_module.infra_profile", LaunchConfiguration("infra_profile")
+                ),
+                SetLaunchConfiguration("enable_sync", LaunchConfiguration("enable_sync")),
+                SetLaunchConfiguration(
                     "pointcloud.enable", LaunchConfiguration("pointcloud_enable")
                 ),
                 SetLaunchConfiguration(
@@ -85,22 +98,42 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "enable_infra1",
-                default_value="true",
+                default_value="false",
                 description="Enable infrared stream 1.",
             ),
             DeclareLaunchArgument(
                 "enable_infra2",
-                default_value="true",
+                default_value="false",
                 description="Enable infrared stream 2.",
             ),
             DeclareLaunchArgument(
+                "color_profile",
+                default_value="640,480,15",
+                description="D405 color profile as width,height,fps. Use lower values to reduce Wi-Fi bandwidth.",
+            ),
+            DeclareLaunchArgument(
+                "depth_profile",
+                default_value="640,480,15",
+                description="D405 depth profile as width,height,fps.",
+            ),
+            DeclareLaunchArgument(
+                "infra_profile",
+                default_value="640,480,15",
+                description="D405 infrared profile as width,height,fps.",
+            ),
+            DeclareLaunchArgument(
+                "enable_sync",
+                default_value="false",
+                description="Enable RealSense stream synchronization.",
+            ),
+            DeclareLaunchArgument(
                 "pointcloud_enable",
-                default_value="true",
+                default_value="false",
                 description="Enable the RealSense point cloud output.",
             ),
             DeclareLaunchArgument(
                 "align_depth_enable",
-                default_value="true",
+                default_value="false",
                 description="Align depth to color.",
             ),
             DeclareLaunchArgument(
