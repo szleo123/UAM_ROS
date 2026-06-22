@@ -292,7 +292,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "start_trajectory_command_monitor",
-                default_value="true",
+                default_value="false",
                 description="Show final arm trajectory commands on the laptop.",
             ),
             DeclareLaunchArgument(
