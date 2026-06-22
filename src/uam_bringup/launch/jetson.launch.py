@@ -302,7 +302,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "camera_color_profile",
-            default_value="320,240,15",
+            default_value="640,480,15",
             description="D405 color profile as width,height,fps.",
         ),
         DeclareLaunchArgument(
