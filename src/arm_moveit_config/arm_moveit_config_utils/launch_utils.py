@@ -422,27 +422,27 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "dynamixel_open_position_ticks",
-            default_value="2048",
+            default_value="500",
             description="Conservative open position tick value for DYNAMIXEL bench bringup.",
         ),
         DeclareLaunchArgument(
             "dynamixel_close_position_ticks",
-            default_value="2600",
+            default_value="2500",
             description="Conservative close/sampling position tick value for DYNAMIXEL bench bringup.",
         ),
         DeclareLaunchArgument(
             "dynamixel_goal_current_ma",
-            default_value="150.0",
+            default_value="1200.0",
             description="Default DYNAMIXEL goal current used for normal gripper moves.",
         ),
         DeclareLaunchArgument(
             "dynamixel_open_current_ma",
-            default_value="150.0",
+            default_value="1200.0",
             description="DYNAMIXEL goal current used for emergency/open recovery moves.",
         ),
         DeclareLaunchArgument(
             "dynamixel_current_limit_ma",
-            default_value="500.0",
+            default_value="1500.0",
             description="Bench-safe DYNAMIXEL EEPROM current limit. Applied only when dynamixel_apply_limits_on_start is true or via UI.",
         ),
         DeclareLaunchArgument(
@@ -462,7 +462,7 @@ def common_bringup_launch_arguments(
         ),
         DeclareLaunchArgument(
             "dynamixel_apply_limits_on_start",
-            default_value="false",
+            default_value="true",
             description="Apply DYNAMIXEL EEPROM current/temperature limits during startup. Disabled by default for cautious bench bringup.",
         ),
         DeclareLaunchArgument(
