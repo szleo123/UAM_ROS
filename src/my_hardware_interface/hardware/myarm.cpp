@@ -128,6 +128,17 @@ constexpr double kDxlCurrentUnitMa = 2.69;
 constexpr int kDxlCurrentLimitMaxUnits = 648;
 constexpr double kDxlTemperatureLimitMaxC = 100.0;
 
+std::string dynamixel_rx_error_text(
+  dynamixel::PacketHandler * packet,
+  uint8_t error)
+{
+  if (error == 0)
+    return "none";
+  if (!packet)
+    return "unknown";
+  return packet->getRxPacketError(error);
+}
+
 double safe_period_seconds(const rclcpp::Duration & period)
 {
   return std::max(period.seconds(), kMinPeriodSec);
@@ -798,6 +809,8 @@ hardware_interface::CallbackReturn MyArmHardware::on_configure(
     std::scoped_lock gk(gripper_mtx_);
     std::string message;
     gripper_ok_ = dynamixel_open_locked(message);
+    if (gripper_ok_)
+      RCLCPP_WARN(get_logger(), "%s", message.c_str());
     if (gripper_ok_ && dynamixel_configure_on_start_)
       gripper_ok_ = dynamixel_initialize_locked(message);
     if (gripper_ok_)
@@ -3034,7 +3047,8 @@ bool MyArmHardware::dynamixel_open_locked(std::string & message)
     ss << "Failed to ping DYNAMIXEL ID " << static_cast<int>(gripper_id_)
        << " on " << gripper_port_path_ << ": "
        << dynamixel_packet_->getTxRxResult(result)
-       << ", error=0x" << std::hex << static_cast<int>(error);
+       << ", error=0x" << std::hex << static_cast<int>(error)
+       << " (" << dynamixel_rx_error_text(dynamixel_packet_, error) << ")";
     message = ss.str();
     return false;
   }
@@ -3074,7 +3088,10 @@ bool MyArmHardware::dynamixel_write1_locked(
   std::ostringstream ss;
   ss << "DYNAMIXEL write " << label << " failed: "
      << dynamixel_packet_->getTxRxResult(result)
-     << ", error=0x" << std::hex << static_cast<int>(error);
+     << ", error=0x" << std::hex << static_cast<int>(error)
+     << " (" << dynamixel_rx_error_text(dynamixel_packet_, error) << ")"
+     << ", address=" << std::dec << address
+     << ", value=" << static_cast<int>(value);
   message = ss.str();
   return false;
 }
@@ -3093,7 +3110,10 @@ bool MyArmHardware::dynamixel_write2_locked(
   std::ostringstream ss;
   ss << "DYNAMIXEL write " << label << " failed: "
      << dynamixel_packet_->getTxRxResult(result)
-     << ", error=0x" << std::hex << static_cast<int>(error);
+     << ", error=0x" << std::hex << static_cast<int>(error)
+     << " (" << dynamixel_rx_error_text(dynamixel_packet_, error) << ")"
+     << ", address=" << std::dec << address
+     << ", value=" << value;
   message = ss.str();
   return false;
 }
@@ -3112,7 +3132,10 @@ bool MyArmHardware::dynamixel_write4_locked(
   std::ostringstream ss;
   ss << "DYNAMIXEL write " << label << " failed: "
      << dynamixel_packet_->getTxRxResult(result)
-     << ", error=0x" << std::hex << static_cast<int>(error);
+     << ", error=0x" << std::hex << static_cast<int>(error)
+     << " (" << dynamixel_rx_error_text(dynamixel_packet_, error) << ")"
+     << ", address=" << std::dec << address
+     << ", value=" << value;
   message = ss.str();
   return false;
 }
@@ -3131,7 +3154,9 @@ bool MyArmHardware::dynamixel_read1_locked(
   std::ostringstream ss;
   ss << "DYNAMIXEL read " << label << " failed: "
      << dynamixel_packet_->getTxRxResult(result)
-     << ", error=0x" << std::hex << static_cast<int>(error);
+     << ", error=0x" << std::hex << static_cast<int>(error)
+     << " (" << dynamixel_rx_error_text(dynamixel_packet_, error) << ")"
+     << ", address=" << std::dec << address;
   message = ss.str();
   return false;
 }
@@ -3150,7 +3175,9 @@ bool MyArmHardware::dynamixel_read2_locked(
   std::ostringstream ss;
   ss << "DYNAMIXEL read " << label << " failed: "
      << dynamixel_packet_->getTxRxResult(result)
-     << ", error=0x" << std::hex << static_cast<int>(error);
+     << ", error=0x" << std::hex << static_cast<int>(error)
+     << " (" << dynamixel_rx_error_text(dynamixel_packet_, error) << ")"
+     << ", address=" << std::dec << address;
   message = ss.str();
   return false;
 }
@@ -3169,7 +3196,9 @@ bool MyArmHardware::dynamixel_read4_locked(
   std::ostringstream ss;
   ss << "DYNAMIXEL read " << label << " failed: "
      << dynamixel_packet_->getTxRxResult(result)
-     << ", error=0x" << std::hex << static_cast<int>(error);
+     << ", error=0x" << std::hex << static_cast<int>(error)
+     << " (" << dynamixel_rx_error_text(dynamixel_packet_, error) << ")"
+     << ", address=" << std::dec << address;
   message = ss.str();
   return false;
 }
@@ -3267,7 +3296,31 @@ bool MyArmHardware::dynamixel_command_position_locked(
   bool force,
   std::string & message)
 {
-  const int current_units = std::abs(dynamixel_current_ma_to_units(current_ma));
+  int current_units = std::abs(dynamixel_current_ma_to_units(current_ma));
+  uint16_t current_limit_raw = 0;
+  if (!dynamixel_read2_locked(kDxlAddrCurrentLimit, current_limit_raw, "Current Limit", message))
+    return false;
+  const int current_limit_units = static_cast<int>(current_limit_raw);
+  if (current_units > current_limit_units)
+  {
+    if (current_limit_units <= 0)
+    {
+      std::ostringstream ss;
+      ss << "DYNAMIXEL Goal Current request " << current_units
+         << " units (" << std::lround(current_ma) << "mA) exceeds Current Limit(38)=0. "
+         << "Set a nonzero DYNAMIXEL current limit first, for example "
+         << "dynamixel_apply_limits_on_start:=true dynamixel_current_limit_ma:=500.";
+      message = ss.str();
+      return false;
+    }
+    RCLCPP_WARN(
+      get_logger(),
+      "DYNAMIXEL requested current %.0fmA (%d units) exceeds Current Limit(38)=%d units; clamping.",
+      current_ma,
+      current_units,
+      current_limit_units);
+    current_units = current_limit_units;
+  }
   if (!force &&
       goal_ticks == dynamixel_last_goal_position_ticks_ &&
       current_units == dynamixel_last_goal_current_units_)
